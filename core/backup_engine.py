@@ -122,24 +122,13 @@ class BackupWorker(QRunnable):
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             dest_dir = self.settings.backup_destination
             os.makedirs(dest_dir, exist_ok=True)
-            # Filename: index_InstanceName_YYYYMMDD_HHMMSS.ldbk
-            safe_name = safe_filename(job.name)
-            backup_file = os.path.join(dest_dir, f"{job.index}_{safe_name}_{ts}.ldbk")
-
-            # ---- 3. Rename ALL existing .ldbk files for this instance → .old ---------------
-            existing_backups = glob.glob(os.path.join(dest_dir, f"{job.index}_{safe_name}_*.ldbk"))
-            for existing in existing_backups:
-                old_path = existing + ".old"
-                if os.path.exists(old_path):
-                    try:
-                        os.remove(old_path)
-                    except OSError:
-                        pass
-                try:
-                    os.rename(existing, old_path)
-                    logger.debug("Renamed %s → .old", os.path.basename(existing))
-                except OSError as e:
-                    logger.warning("Could not rename existing backup: %s", e)
+            safe_name = "".join(c for c in job.name if c.isalnum() or c in "-_")
+            final_filename = f"{job.index}_{safe_name}_{ts}.ldbk"
+            final_backup_file = os.path.join(dest_dir, final_filename)
+            
+            # Use a temporary extension during the backup process
+            temp_filename = f"{job.index}_{safe_name}_{ts}.tmp.ldbk"
+            backup_file = os.path.join(dest_dir, temp_filename)
 
             # ---- 4. Run backup --------------------------------------------
             self._emit_status(JobStatus.BACKING_UP, "Backing up…", 20)
@@ -161,36 +150,42 @@ class BackupWorker(QRunnable):
                 raise RuntimeError("Checksum computation failed.")
             self._emit_status(JobStatus.VERIFYING, "Checksum OK", 95)
 
-            # ---- 7. Record to DB -----------------------------------------
+            # ---- 7. Delete previous good backups for this instance --------
+            existing_backups = glob.glob(os.path.join(dest_dir, f"{job.index}_*.ldbk"))
+            for existing in existing_backups:
+                if existing != backup_file:  # Don't delete our temp file yet
+                    try:
+                        os.remove(existing)
+                    except OSError as e:
+                        logger.warning("Could not delete old backup: %s", e)
+                        
+            # ---- 8. Rename temporary backup to final ----------------------
+            try:
+                os.rename(backup_file, final_backup_file)
+            except OSError as e:
+                raise RuntimeError(f"Failed to finalize backup file: {e}")
+
+            # ---- 9. Record to DB -----------------------------------------
             duration = time.time() - start_time
             self.store.upsert_backup(
                 instance_index=job.index,
                 instance_name=job.name,
-                backup_path=backup_file,
+                backup_path=final_backup_file,
                 checksum=checksum,
                 timestamp=now_iso(),
-                status="completed",
+                status="success",
                 file_size=file_size,
                 duration_sec=duration,
             )
 
-            # ---- 8. Delete .old files for this instance on success --------------------
-            old_files = glob.glob(os.path.join(dest_dir, f"{job.index}_*.old"))
-            for old_f in old_files:
-                try:
-                    os.remove(old_f)
-                    logger.debug("Deleted old backup: %s", os.path.basename(old_f))
-                except OSError as e:
-                    logger.warning("Could not delete .old for index %d: %s", job.index, e)
-
             # ---- Done ----------------------------------------------------
             job.status = JobStatus.DONE
-            job.backup_path = backup_file
+            job.backup_path = final_backup_file
             job.duration_sec = duration
             job.completed_at = now_iso()
             self._emit_status(JobStatus.DONE, "Backup complete ✓", 100)
-            self.signals.job_done.emit(job.index, backup_file, duration)
-            logger.info("Backup DONE: index=%d  file=%s  %.1fs", job.index, backup_file, duration)
+            self.signals.job_done.emit(job.index, final_backup_file, duration)
+            logger.info("Backup DONE: index=%d  file=%s  %.1fs", job.index, final_backup_file, duration)
 
         except Exception as exc:
             duration = time.time() - start_time
@@ -200,16 +195,10 @@ class BackupWorker(QRunnable):
             job.duration_sec = duration
             job.completed_at = now_iso()
 
-            # Rollback: delete partial new file and restore .old
+            # Rollback: delete partial temporary file
             if os.path.exists(backup_file):
                 try:
                     os.remove(backup_file)
-                except OSError:
-                    pass
-            old_files = glob.glob(os.path.join(dest_dir, f"{job.index}_*.old"))
-            for old_f in old_files:
-                try:
-                    os.rename(old_f, old_f[:-4])
                 except OSError:
                     pass
 
@@ -286,33 +275,39 @@ class BackupManager(QObject):
     # Run / Cancel
     @staticmethod
     def cleanup_stale_backups(dest_dir: str):
-        """Roll back any incomplete backups left over from a crash."""
+        """Clean up any temporary backup files left over from a crash."""
         if not os.path.isdir(dest_dir):
             return
+            
+        # Kill any lingering ldconsole.exe processes that might be locking the .tmp files
+        import subprocess
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/IM", "ldconsole.exe"],
+                capture_output=True,
+                creationflags=subprocess.CREATE_NO_WINDOW
+            )
+            logger.debug("Cleanup: Killed lingering ldconsole.exe processes.")
+        except Exception as e:
+            logger.warning("Cleanup: Failed to kill ldconsole.exe: %s", e)
+            
+        # Clean up the new .tmp.ldbk files
+        temp_files = glob.glob(os.path.join(dest_dir, "*.tmp.ldbk"))
+        for temp_f in temp_files:
+            try:
+                os.remove(temp_f)
+                logger.info("Cleanup: Deleted partial/interrupted backup %s", os.path.basename(temp_f))
+            except OSError as e:
+                logger.warning("Cleanup: Could not delete %s: %s", temp_f, e)
+                
+        # Also clean up any legacy .old files just in case
         old_files = glob.glob(os.path.join(dest_dir, "*.old"))
         for old_f in old_files:
-            basename = os.path.basename(old_f)
-            parts = basename.split("_")
-            if not parts or not parts[0].isdigit():
-                continue
-            idx = parts[0]
-            
-            # Find and delete any newer partial .ldbk files for this instance
-            newer_ldbk = glob.glob(os.path.join(dest_dir, f"{idx}_*.ldbk"))
-            for n_ldbk in newer_ldbk:
-                try:
-                    os.remove(n_ldbk)
-                    logger.info("Rollback: Deleted broken/partial backup %s", os.path.basename(n_ldbk))
-                except OSError as e:
-                    logger.warning("Rollback: Could not delete %s: %s", n_ldbk, e)
-            
-            # Rename .old back to .ldbk
-            orig_name = old_f[:-4]
             try:
-                os.rename(old_f, orig_name)
-                logger.info("Rollback: Restored good backup %s", os.path.basename(orig_name))
+                os.rename(old_f, old_f[:-4])
+                logger.info("Cleanup: Restored legacy good backup %s", os.path.basename(old_f[:-4]))
             except OSError as e:
-                logger.warning("Rollback: Could not restore %s: %s", old_f, e)
+                logger.warning("Cleanup: Could not restore legacy %s: %s", old_f, e)
 
     # ------------------------------------------------------------------
 
