@@ -14,6 +14,7 @@ class AppSettings:
     # Paths
     ldconsole_path: str = r"C:\LDPlayer\LDPlayer9\ldconsole.exe"
     backup_destination: str = ""
+    restore_path: str = ""
 
     # Batch control
     batch_size: int = 5

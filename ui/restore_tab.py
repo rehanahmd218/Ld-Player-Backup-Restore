@@ -8,6 +8,7 @@ Restore Tab
 • Auto-creates missing instances before restoring
 """
 from typing import List, Optional
+import os
 
 from PyQt5.QtCore import Qt, pyqtSlot
 from PyQt5.QtWidgets import (
@@ -182,9 +183,47 @@ class RestoreTab(QWidget):
     # ------------------------------------------------------------------
 
     def _load_records(self):
-        if not self._store:
+        if not self._store or not self._settings:
             return
-        self._records = self._store.get_all_latest()
+            
+        restore_path = self._settings.restore_path
+        if not restore_path or not os.path.isdir(restore_path):
+            self._records = []
+            self._populate_table([])
+            return
+
+        db_records = self._store.get_all(limit=10000)
+        
+        db_map = {}
+        for r in db_records:
+            fname = os.path.basename(r.backup_path)
+            if fname not in db_map:
+                db_map[fname] = r
+                
+        valid_records = []
+        try:
+            for fname in os.listdir(restore_path):
+                file_path = os.path.join(restore_path, fname)
+                if not os.path.isfile(file_path):
+                    continue
+                if fname in db_map:
+                    rec = db_map[fname]
+                    new_rec = BackupRecord(
+                        id=rec.id,
+                        instance_index=rec.instance_index,
+                        instance_name=rec.instance_name,
+                        backup_path=file_path,
+                        checksum=rec.checksum,
+                        timestamp=rec.timestamp,
+                        status=rec.status,
+                        file_size=rec.file_size,
+                        duration_sec=rec.duration_sec
+                    )
+                    valid_records.append(new_rec)
+        except Exception:
+            pass
+            
+        self._records = valid_records
         self._populate_table(self._records)
 
     def _populate_table(self, records: List[BackupRecord]):

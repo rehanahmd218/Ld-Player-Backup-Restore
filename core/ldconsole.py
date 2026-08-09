@@ -151,3 +151,24 @@ class LDConsoleWrapper:
             return True, out
         logger.error("Copy instance failed (src=%d → %s): %s", source_index, new_name, err or out[:80])
         return False, err or "Unknown error (copy command returned help page)"
+
+    def modify_instance(self, name: str, resolution: str = "", cpu: int = 0, memory: int = 0) -> Tuple[bool, str]:
+        """Modify an instance's settings. resolution is w,h,dpi (e.g. 1280,720,240)."""
+        logger.info("Modifying instance: %s", name)
+        args = ["modify", "--name", name]
+        if resolution:
+            args.extend(["--resolution", resolution])
+        if cpu > 0:
+            args.extend(["--cpu", str(cpu)])
+        if memory > 0:
+            args.extend(["--memory", str(memory)])
+            
+        if len(args) == 3:
+            return True, "No modifications requested"
+
+        rc, out, err = self._run(*args, timeout=60)
+        is_error = bool(err and ("error" in err.lower() or "fail" in err.lower()))
+        if not is_error:
+            return True, out
+        logger.error("Modify instance failed: %s", err)
+        return False, err

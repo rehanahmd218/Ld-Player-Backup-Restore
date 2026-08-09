@@ -1238,3 +1238,259 @@ operaterecord <--name mnq_name | --index mnq_idx>  --content <jsonstring>
 2026-08-08 21:29:30  INFO      core.restore_engine — Created new instance: got actual idx=6 (requested name=LDPlayer-5)
 2026-08-08 21:29:30  INFO      core.ldconsole — Restoring instance 6 ← D:/Bkupa\LDPlayer-5_6\LDPlayer-5_20260808_210401.ldbk
 2026-08-08 21:29:30  INFO      core.restore_engine — Restore DONE: orig_idx=6 target_idx=6 0.2s
+2026-08-09 11:17:42  INFO      ui.main_window — Loaded 0 LDPlayer instance(s).
+2026-08-09 11:19:02  INFO      ui.main_window — Loaded 0 LDPlayer instance(s).
+2026-08-09 11:19:10  INFO      core.ldconsole — Creating new instance: LDPlayer-2
+2026-08-09 11:19:10  INFO      core.restore_engine — Created new instance: got actual idx=0 (requested name=LDPlayer-2)
+2026-08-09 11:19:10  INFO      core.ldconsole — Restoring instance 0 ← D:/Bkupa\LDPlayer-2_3\LDPlayer-2_20260808_210400.ldbk
+2026-08-09 11:19:10  ERROR     core.ldconsole — Restore failed for index 0: ldplayer v9.5.3.0 Command Line Management Interface
+All rights reserved.
+
+Usage:
+
+ldconsole <command> [parameter]
+
+dnconsole <command> [parameter]
+
+Commands :
+
+
+quit <--name mnq_name | --index mnq_idx>
+
+quitall
+
+launch <--name mnq_name | --index mnq_idx>
+
+reboot <--name mnq_name | --index mnq_idx>
+
+list
+
+list2
+
+list3 [--index <mnq_idx>]
+
+runninglist
+
+isrunning <--name mnq_name | --index mnq_idx>
+
+add [--name <mnq_name>]
+
+copy [--name <mnq_name>] --from <mnq_name | mnq_idx>
+
+remove <--name mnq_name | --index mnq_idx>
+
+rename [--name <mnq_name | --index mnq_idx>] --title <mnq_title>
+
+modify <--name mnq_name | --index mnq_idx>
+       [--resolution <w,h,dpi>]
+       [--cpu <1 | 2 | 3 | 4>]
+       [--memory <256 | 512 | 768 | 1024 | 1536 | 2048 | 4096 | 8192>]
+       [--manufacturer asus]
+       [--model ASUS_Z00DUO]
+       [--pnumber 13800000000]
+       [--imei <auto | 865166023949731>]
+       [--imsi <auto | 460000000000000>]
+       [--simserial <auto | 89860000000000000000>]
+       [--androidid <auto | 0123456789abcdef>]
+       [--mac <auto | 000000000000>]
+       [--autorotate <1 | 0>
+       [--lockwindow <1 | 0>
+
+       [--root <1 | 0>
+
+installapp <--name mnq_name | --index mnq_idx> --filename <apk_file_name>
+
+installapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+uninstallapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+runapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+killapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+locate <--name mnq_name | --index mnq_idx> --LLI <Lng,Lat>
+
+adb <--name mnq_name | --index mnq_idx> --command <cmd_str>
+
+setprop <--name mnq_name | --index mnq_idx> --key <name> --value <val>
+
+getprop <--name mnq_name | --index mnq_idx> [--key <name>]
+
+downcpu <--name mnq_name | --index mnq_idx> --rate <0~100>
+
+backup  <--name mnq_name | --index mnq_idx> --file <filepath>
+
+restore <--name mnq_name | --index mnq_idx> --file <filepath>
+
+action <--name mnq_name | --index mnq_idx> --key <name> --value <val>
+
+scan  <--name mnq_name | --index mnq_idx> --file <filepath>
+
+sortWnd
+
+zoomIn
+
+zoomOut
+
+rock
+
+pull  <--name mnq_name | --index mnq_idx> --remote <filepath> --local <filepath>
+
+push  <--name mnq_name | --index mnq_idx> --remote <filepath> --local <filepath>
+
+backupapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name> --file <filepath>
+
+restoreapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name> --file <filepath>
+
+globalsetting [--fps <0~60>] [--audio <1 | 0>] [--fastplay <1 | 0>] [--cleanmode <1 | 0>]
+
+launchex <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+operatelist <--name mnq_name | --index mnq_idx>
+
+operateinfo <--name mnq_name | --index mnq_idx> --file <filename>
+
+operaterecord <--name mnq_name | --index mnq_idx>  --content <jsonstring>
+2026-08-09 11:19:10  ERROR     core.restore_engine — Restore FAILED: idx=3  error=ldconsole restore failed: ldplayer v9.5.3.0 Command Line Management Interface
+All rights reserved.
+
+Usage:
+
+ldconsole <command> [parameter]
+
+dnconsole <command> [parameter]
+
+Commands :
+
+
+quit <--name mnq_name | --index mnq_idx>
+
+quitall
+
+launch <--name mnq_name | --index mnq_idx>
+
+reboot <--name mnq_name | --index mnq_idx>
+
+list
+
+list2
+
+list3 [--index <mnq_idx>]
+
+runninglist
+
+isrunning <--name mnq_name | --index mnq_idx>
+
+add [--name <mnq_name>]
+
+copy [--name <mnq_name>] --from <mnq_name | mnq_idx>
+
+remove <--name mnq_name | --index mnq_idx>
+
+rename [--name <mnq_name | --index mnq_idx>] --title <mnq_title>
+
+modify <--name mnq_name | --index mnq_idx>
+       [--resolution <w,h,dpi>]
+       [--cpu <1 | 2 | 3 | 4>]
+       [--memory <256 | 512 | 768 | 1024 | 1536 | 2048 | 4096 | 8192>]
+       [--manufacturer asus]
+       [--model ASUS_Z00DUO]
+       [--pnumber 13800000000]
+       [--imei <auto | 865166023949731>]
+       [--imsi <auto | 460000000000000>]
+       [--simserial <auto | 89860000000000000000>]
+       [--androidid <auto | 0123456789abcdef>]
+       [--mac <auto | 000000000000>]
+       [--autorotate <1 | 0>
+       [--lockwindow <1 | 0>
+
+       [--root <1 | 0>
+
+installapp <--name mnq_name | --index mnq_idx> --filename <apk_file_name>
+
+installapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+uninstallapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+runapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+killapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+locate <--name mnq_name | --index mnq_idx> --LLI <Lng,Lat>
+
+adb <--name mnq_name | --index mnq_idx> --command <cmd_str>
+
+setprop <--name mnq_name | --index mnq_idx> --key <name> --value <val>
+
+getprop <--name mnq_name | --index mnq_idx> [--key <name>]
+
+downcpu <--name mnq_name | --index mnq_idx> --rate <0~100>
+
+backup  <--name mnq_name | --index mnq_idx> --file <filepath>
+
+restore <--name mnq_name | --index mnq_idx> --file <filepath>
+
+action <--name mnq_name | --index mnq_idx> --key <name> --value <val>
+
+scan  <--name mnq_name | --index mnq_idx> --file <filepath>
+
+sortWnd
+
+zoomIn
+
+zoomOut
+
+rock
+
+pull  <--name mnq_name | --index mnq_idx> --remote <filepath> --local <filepath>
+
+push  <--name mnq_name | --index mnq_idx> --remote <filepath> --local <filepath>
+
+backupapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name> --file <filepath>
+
+restoreapp <--name mnq_name | --index mnq_idx> --packagename <apk_package_name> --file <filepath>
+
+globalsetting [--fps <0~60>] [--audio <1 | 0>] [--fastplay <1 | 0>] [--cleanmode <1 | 0>]
+
+launchex <--name mnq_name | --index mnq_idx> --packagename <apk_package_name>
+
+operatelist <--name mnq_name | --index mnq_idx>
+
+operateinfo <--name mnq_name | --index mnq_idx> --file <filename>
+
+operaterecord <--name mnq_name | --index mnq_idx>  --content <jsonstring>
+2026-08-09 11:24:57  INFO      ui.main_window — Loaded 1 LDPlayer instance(s).
+2026-08-09 11:25:38  INFO      core.ldconsole — Creating new instance: LDPlayer-1
+2026-08-09 11:25:38  INFO      ui.create_instances_tab — Created instance: LDPlayer-1
+2026-08-09 11:25:38  INFO      core.ldconsole — Creating new instance: LDPlayer-2
+2026-08-09 11:25:38  INFO      ui.create_instances_tab — Created instance: LDPlayer-2
+2026-08-09 11:25:38  INFO      core.ldconsole — Creating new instance: LDPlayer-3
+2026-08-09 11:25:38  INFO      ui.create_instances_tab — Created instance: LDPlayer-3
+2026-08-09 11:25:38  INFO      core.ldconsole — Creating new instance: LDPlayer-4
+2026-08-09 11:25:39  INFO      ui.create_instances_tab — Created instance: LDPlayer-4
+2026-08-09 11:25:39  INFO      core.ldconsole — Creating new instance: LDPlayer-5
+2026-08-09 11:25:39  INFO      ui.create_instances_tab — Created instance: LDPlayer-5
+2026-08-09 11:25:39  INFO      ui.main_window — Loaded 6 LDPlayer instance(s).
+2026-08-09 11:28:55  INFO      ui.main_window — Loaded 6 LDPlayer instance(s).
+2026-08-09 11:30:06  INFO      ui.main_window — Loaded 0 LDPlayer instance(s).
+2026-08-09 11:30:45  INFO      core.ldconsole — Creating new instance: LDPlayer-1
+2026-08-09 11:30:45  INFO      core.ldconsole — Modifying instance: LDPlayer-1
+2026-08-09 11:30:45  INFO      ui.create_instances_tab — Created instance: LDPlayer-1
+2026-08-09 11:30:45  INFO      core.ldconsole — Creating new instance: LDPlayer-2
+2026-08-09 11:30:45  INFO      core.ldconsole — Modifying instance: LDPlayer-2
+2026-08-09 11:30:45  INFO      ui.create_instances_tab — Created instance: LDPlayer-2
+2026-08-09 11:30:45  INFO      core.ldconsole — Creating new instance: LDPlayer-3
+2026-08-09 11:30:45  INFO      core.ldconsole — Modifying instance: LDPlayer-3
+2026-08-09 11:30:45  INFO      ui.create_instances_tab — Created instance: LDPlayer-3
+2026-08-09 11:30:45  INFO      core.ldconsole — Creating new instance: LDPlayer-4
+2026-08-09 11:30:45  INFO      core.ldconsole — Modifying instance: LDPlayer-4
+2026-08-09 11:30:45  INFO      ui.create_instances_tab — Created instance: LDPlayer-4
+2026-08-09 11:30:45  INFO      core.ldconsole — Creating new instance: LDPlayer-5
+2026-08-09 11:30:45  INFO      core.ldconsole — Modifying instance: LDPlayer-5
+2026-08-09 11:30:45  INFO      ui.create_instances_tab — Created instance: LDPlayer-5
+2026-08-09 11:30:45  INFO      ui.main_window — Loaded 5 LDPlayer instance(s).
+2026-08-09 11:35:13  INFO      ui.main_window — Loaded 5 LDPlayer instance(s).
+2026-08-09 11:35:49  INFO      core.ldconsole — Creating new instance: LDPlayer-8
+2026-08-09 11:35:49  INFO      core.ldconsole — Modifying instance: LDPlayer-8
+2026-08-09 11:35:49  INFO      ui.create_instances_tab — Created instance: LDPlayer-8
+2026-08-09 11:35:49  INFO      ui.main_window — Loaded 6 LDPlayer instance(s).

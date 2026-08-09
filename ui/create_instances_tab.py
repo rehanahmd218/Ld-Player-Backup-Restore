@@ -44,11 +44,14 @@ class CreateWorker(QThread):
     all_done = pyqtSignal(int, int)                  # success_count, fail_count
 
     def __init__(self, names: List[str], ldconsole: LDConsoleWrapper,
-                 copy_from_index: int = -1, parent=None):
+                 copy_from_index: int = -1, resolution: str = "", cpu: int = 0, memory: int = 0, parent=None):
         super().__init__(parent)
         self._names = names
         self._ldconsole = ldconsole
         self._copy_from = copy_from_index
+        self._resolution = resolution
+        self._cpu = cpu
+        self._memory = memory
         self._cancelled = False
 
     def cancel(self):
@@ -67,6 +70,13 @@ class CreateWorker(QThread):
                     ok, msg = self._ldconsole.add_instance(name)
 
                 if ok:
+                    if self._resolution or self._cpu > 0 or self._memory > 0:
+                        mod_ok, mod_msg = self._ldconsole.modify_instance(
+                            name, self._resolution, self._cpu, self._memory
+                        )
+                        if not mod_ok:
+                            logger.error("Failed to modify %s: %s", name, mod_msg)
+                            msg = f"Created, but modify failed: {mod_msg}"
                     success += 1
                     logger.info("Created instance: %s", name)
                 else:
@@ -161,6 +171,59 @@ class CreateInstancesTab(QWidget):
         row2.addStretch()
         cg.addLayout(row2)
 
+        # Hardware properties
+        row3 = QHBoxLayout()
+        
+        row3.addWidget(QLabel("CPU cores:"))
+        self._cpu_combo = QComboBox()
+        self._cpu_combo.addItems(["Default", "1", "2", "3", "4"])
+        row3.addWidget(self._cpu_combo)
+        
+        row3.addWidget(QLabel("Memory:"))
+        self._mem_combo = QComboBox()
+        self._mem_combo.addItems(["Default", "256", "512", "768", "1024", "1536", "2048", "4096", "8192"])
+        row3.addWidget(self._mem_combo)
+        
+        row3.addStretch()
+        cg.addLayout(row3)
+        
+        # Resolution properties
+        row4 = QHBoxLayout()
+        self._chk_res = QCheckBox("Override Resolution:")
+        self._chk_res.toggled.connect(self._on_res_toggled)
+        row4.addWidget(self._chk_res)
+        
+        row4.addWidget(QLabel("View:"))
+        self._view_combo = QComboBox()
+        self._view_combo.addItems(["Tablet", "Mobile"])
+        self._view_combo.currentIndexChanged.connect(self._on_view_changed)
+        self._view_combo.setEnabled(False)
+        row4.addWidget(self._view_combo)
+        
+        row4.addWidget(QLabel("W:"))
+        self._res_w = QSpinBox()
+        self._res_w.setRange(1, 7680)
+        self._res_w.setValue(1280)
+        self._res_w.setEnabled(False)
+        row4.addWidget(self._res_w)
+        
+        row4.addWidget(QLabel("H:"))
+        self._res_h = QSpinBox()
+        self._res_h.setRange(1, 7680)
+        self._res_h.setValue(720)
+        self._res_h.setEnabled(False)
+        row4.addWidget(self._res_h)
+        
+        row4.addWidget(QLabel("DPI:"))
+        self._res_dpi = QSpinBox()
+        self._res_dpi.setRange(1, 1000)
+        self._res_dpi.setValue(240)
+        self._res_dpi.setEnabled(False)
+        row4.addWidget(self._res_dpi)
+        
+        row4.addStretch()
+        cg.addLayout(row4)
+
         root.addWidget(cfg_group)
 
         # --- Preview -------------------------------------------------
@@ -250,6 +313,24 @@ class CreateInstancesTab(QWidget):
     def _on_copy_toggled(self, checked: bool):
         self._combo_copy.setEnabled(checked)
 
+    @pyqtSlot(bool)
+    def _on_res_toggled(self, checked: bool):
+        self._view_combo.setEnabled(checked)
+        self._res_w.setEnabled(checked)
+        self._res_h.setEnabled(checked)
+        self._res_dpi.setEnabled(checked)
+
+    @pyqtSlot(int)
+    def _on_view_changed(self, index: int):
+        w = self._res_w.value()
+        h = self._res_h.value()
+        if index == 0 and w < h:
+            self._res_w.setValue(h)
+            self._res_h.setValue(w)
+        elif index == 1 and h <= w:
+            self._res_w.setValue(h)
+            self._res_h.setValue(w)
+
     # ------------------------------------------------------------------
     @pyqtSlot()
     def _on_create(self):
@@ -276,7 +357,19 @@ class CreateInstancesTab(QWidget):
         self._btn_create.setEnabled(False)
         self._btn_cancel.setEnabled(True)
 
-        self._worker = CreateWorker(names, self._ldconsole, copy_idx, self)
+        cpu_val = 0
+        if self._cpu_combo.currentIndex() > 0:
+            cpu_val = int(self._cpu_combo.currentText())
+            
+        mem_val = 0
+        if self._mem_combo.currentIndex() > 0:
+            mem_val = int(self._mem_combo.currentText())
+            
+        res_val = ""
+        if self._chk_res.isChecked():
+            res_val = f"{self._res_w.value()},{self._res_h.value()},{self._res_dpi.value()}"
+
+        self._worker = CreateWorker(names, self._ldconsole, copy_idx, res_val, cpu_val, mem_val, self)
         self._worker.instance_created.connect(self._on_instance_created)
         self._worker.all_done.connect(self._on_all_done)
         self._worker.start()

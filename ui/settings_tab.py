@@ -73,6 +73,17 @@ class SettingsTab(QWidget):
         dest_row.addWidget(btn_browse_dest)
         pg_layout.addLayout(dest_row)
 
+        # Restore path
+        rest_row = QHBoxLayout()
+        rest_row.addWidget(QLabel("Restore path:"))
+        self._rest_path = QLineEdit()
+        self._rest_path.setPlaceholderText("D:\\Backups\\LDPlayer")
+        rest_row.addWidget(self._rest_path)
+        btn_browse_rest = QPushButton("Browse…")
+        btn_browse_rest.clicked.connect(self._browse_restore)
+        rest_row.addWidget(btn_browse_rest)
+        pg_layout.addLayout(rest_row)
+
         root.addWidget(paths_group)
 
         # ----- Concurrency -------------------------------------------
@@ -156,6 +167,7 @@ class SettingsTab(QWidget):
         self._settings = s
         self._ldc_path.setText(s.ldconsole_path)
         self._dest_path.setText(s.backup_destination)
+        self._rest_path.setText(s.restore_path)
         self._spin_batch.setValue(s.batch_size)
         self._spin_workers.setValue(s.max_concurrency)
         self._discord_url.setText(s.discord_webhook_url)
@@ -175,6 +187,11 @@ class SettingsTab(QWidget):
         path = QFileDialog.getExistingDirectory(self, "Select Backup Destination")
         if path:
             self._dest_path.setText(path)
+
+    def _browse_restore(self):
+        path = QFileDialog.getExistingDirectory(self, "Select Restore Path")
+        if path:
+            self._rest_path.setText(path)
 
     def _validate_ldconsole_path(self, path: str, silent: bool = False) -> bool:
         if os.path.isfile(path):
@@ -217,6 +234,7 @@ class SettingsTab(QWidget):
 
         self._settings.ldconsole_path = path
         self._settings.backup_destination = self._dest_path.text().strip()
+        self._settings.restore_path = self._rest_path.text().strip()
         self._settings.batch_size = self._spin_batch.value()
         self._settings.max_concurrency = self._spin_workers.value()
         self._settings.discord_webhook_url = self._discord_url.text().strip()
