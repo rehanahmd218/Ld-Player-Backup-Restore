@@ -5,3 +5,13 @@ __pycache__
 *.cpython-*
 build
 dist
+
+# App state and data
+data/
+logs/
+queue_state.json
+checksum_mismatches.txt
+
+# Virtual environments
+venv/
+.venv/

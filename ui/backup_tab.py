@@ -36,7 +36,7 @@ from core.ldconsole import InstanceInfo, LDConsoleWrapper
 from core.metadata_store import MetadataStore
 from notifications.discord_notifier import send_failure_alert, send_session_summary
 from ui.widgets.progress_panel import ProgressPanel
-from utils.helpers import format_duration, parse_index_range
+from utils.helpers import format_duration, now_iso, parse_index_range
 
 
 class BackupTab(QWidget):
@@ -238,7 +238,11 @@ class BackupTab(QWidget):
         self._populate_table(instances)
 
     def check_resume(self):
-        pending = BackupManager.load_resumable_jobs()
+        if self._settings and self._settings.backup_destination:
+            BackupManager.cleanup_stale_backups(self._settings.backup_destination)
+            
+        if not self._store: return
+        pending = self._store.get_pending_backups()
         if pending:
             self._resume_frame.setVisible(True)
             self._lbl_resume.setText(
@@ -288,7 +292,7 @@ class BackupTab(QWidget):
             # Col 4 — last backup date from DB
             last_txt = "—"
             if self._store:
-                rec = self._store.get_latest(inst.index)
+                rec = self._store.get_latest_backup(inst.index)
                 if rec:
                     last_txt = rec.timestamp[:10]
             lb_item = QTableWidgetItem(last_txt)
@@ -450,6 +454,39 @@ class BackupTab(QWidget):
             QMessageBox.information(self, "Nothing Selected",
                                     "Check at least one instance in the table.")
             return
+
+        if self._store:
+            pending_records = self._store.get_pending_backups()
+            if pending_records:
+                reply = QMessageBox.question(
+                    self, "Resume Previous Session?",
+                    f"Found {len(pending_records)} pending backup(s) from a previous interrupted run.\n\n"
+                    "Click 'Yes' to resume those along with your current selection.\n"
+                    "Click 'No' to discard the old run and start over with only the current selection.",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+                )
+                if reply == QMessageBox.Cancel:
+                    return
+                if reply == QMessageBox.No:
+                    self._store.cancel_pending_backups()
+                    self._resume_frame.setVisible(False)
+                else:
+                    self._resume_frame.setVisible(False)
+                    job_indices = {j.index for j in jobs}
+                    for rec in pending_records:
+                        if rec.instance_index not in job_indices:
+                            jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
+
+            for job in jobs:
+                self._store.upsert_backup(
+                    instance_index=job.index,
+                    instance_name=job.name,
+                    backup_path="",
+                    checksum="",
+                    timestamp=now_iso(),
+                    status="pending"
+                )
+
         self._start_run(jobs)
 
     @pyqtSlot()
@@ -464,14 +501,32 @@ class BackupTab(QWidget):
     def _on_resume(self):
         if not self._validate():
             return
-        pending = BackupManager.load_resumable_jobs()
-        if pending:
-            self._resume_frame.setVisible(False)
-            self._start_run(pending)
+        if self._store:
+            pending_records = self._store.get_pending_backups()
+            if pending_records:
+                self._resume_frame.setVisible(False)
+                jobs = self._get_checked_jobs()
+                job_indices = {j.index for j in jobs}
+                for rec in pending_records:
+                    if rec.instance_index not in job_indices:
+                        jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
+
+                for job in jobs:
+                    self._store.upsert_backup(
+                        instance_index=job.index,
+                        instance_name=job.name,
+                        backup_path="",
+                        checksum="",
+                        timestamp=now_iso(),
+                        status="pending"
+                    )
+
+                self._start_run(jobs)
 
     @pyqtSlot()
     def _on_discard_resume(self):
-        BackupManager.clear_queue_state()
+        if self._store:
+            self._store.cancel_pending_backups()
         self._resume_frame.setVisible(False)
 
     @pyqtSlot(int, str)

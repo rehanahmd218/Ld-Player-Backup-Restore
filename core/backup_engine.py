@@ -11,12 +11,8 @@ Flow per instance:
   5. Record to metadata DB
   6. Delete .old file on success (or keep on failure)
   7. Emit signals → UI updates in real-time
-
-Resume: queue state is persisted to queue_state.json.
-On next run, already-done jobs are skipped automatically.
 """
 import glob
-import json
 import os
 import time
 from dataclasses import asdict, dataclass, field
@@ -34,10 +30,6 @@ from utils.helpers import now_iso, safe_filename
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
-
-_QUEUE_STATE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "queue_state.json"
-)
 
 
 class JobStatus(str, Enum):
@@ -128,17 +120,14 @@ class BackupWorker(QRunnable):
 
             # ---- 2. Build destination path with timestamp ----------------
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            dest_dir = os.path.join(
-                self.settings.backup_destination,
-                f"{safe_filename(job.name)}_{job.index}",
-            )
+            dest_dir = self.settings.backup_destination
             os.makedirs(dest_dir, exist_ok=True)
-            # Filename: InstanceName_YYYYMMDD_HHMMSS.ldbk
+            # Filename: index_InstanceName_YYYYMMDD_HHMMSS.ldbk
             safe_name = safe_filename(job.name)
-            backup_file = os.path.join(dest_dir, f"{safe_name}_{ts}.ldbk")
+            backup_file = os.path.join(dest_dir, f"{job.index}_{safe_name}_{ts}.ldbk")
 
-            # ---- 3. Rename ALL existing .ldbk files → .old ---------------
-            existing_backups = glob.glob(os.path.join(dest_dir, "*.ldbk"))
+            # ---- 3. Rename ALL existing .ldbk files for this instance → .old ---------------
+            existing_backups = glob.glob(os.path.join(dest_dir, f"{job.index}_{safe_name}_*.ldbk"))
             for existing in existing_backups:
                 old_path = existing + ".old"
                 if os.path.exists(old_path):
@@ -174,19 +163,19 @@ class BackupWorker(QRunnable):
 
             # ---- 7. Record to DB -----------------------------------------
             duration = time.time() - start_time
-            self.store.record_backup(
+            self.store.upsert_backup(
                 instance_index=job.index,
                 instance_name=job.name,
                 backup_path=backup_file,
                 checksum=checksum,
                 timestamp=now_iso(),
-                status="success",
+                status="completed",
                 file_size=file_size,
                 duration_sec=duration,
             )
 
-            # ---- 8. Delete ALL .old files on success --------------------
-            old_files = glob.glob(os.path.join(dest_dir, "*.old"))
+            # ---- 8. Delete .old files for this instance on success --------------------
+            old_files = glob.glob(os.path.join(dest_dir, f"{job.index}_*.old"))
             for old_f in old_files:
                 try:
                     os.remove(old_f)
@@ -211,8 +200,20 @@ class BackupWorker(QRunnable):
             job.duration_sec = duration
             job.completed_at = now_iso()
 
-            # Keep .old file on failure (safety net)
-            self.store.record_backup(
+            # Rollback: delete partial new file and restore .old
+            if os.path.exists(backup_file):
+                try:
+                    os.remove(backup_file)
+                except OSError:
+                    pass
+            old_files = glob.glob(os.path.join(dest_dir, f"{job.index}_*.old"))
+            for old_f in old_files:
+                try:
+                    os.rename(old_f, old_f[:-4])
+                except OSError:
+                    pass
+
+            self.store.upsert_backup(
                 instance_index=job.index,
                 instance_name=job.name,
                 backup_path=job.backup_path or "",
@@ -281,44 +282,38 @@ class BackupManager(QObject):
         self._worker_signals.job_failed.connect(self._on_job_failed)
 
     # ------------------------------------------------------------------
-    # Queue persistence (resume support)
-    # ------------------------------------------------------------------
 
-    def _save_queue(self):
-        try:
-            data = {
-                "jobs": [j.to_dict() for j in self._jobs],
-                "saved_at": now_iso(),
-            }
-            with open(_QUEUE_STATE_FILE, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-        except Exception as e:
-            logger.warning("Could not save queue state: %s", e)
-
-    @staticmethod
-    def load_resumable_jobs() -> Optional[List[BackupJob]]:
-        """Return pending jobs from a previous interrupted run, or None."""
-        if not os.path.exists(_QUEUE_STATE_FILE):
-            return None
-        try:
-            with open(_QUEUE_STATE_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            all_jobs = [BackupJob.from_dict(d) for d in data.get("jobs", [])]
-            pending = [j for j in all_jobs if j.status not in (JobStatus.DONE, JobStatus.SKIPPED)]
-            if pending:
-                logger.info("Resume: %d pending jobs found in queue_state.json", len(pending))
-                return pending
-        except Exception as e:
-            logger.warning("Could not load queue state: %s", e)
-        return None
-
-    @staticmethod
-    def clear_queue_state():
-        if os.path.exists(_QUEUE_STATE_FILE):
-            os.remove(_QUEUE_STATE_FILE)
-
-    # ------------------------------------------------------------------
     # Run / Cancel
+    @staticmethod
+    def cleanup_stale_backups(dest_dir: str):
+        """Roll back any incomplete backups left over from a crash."""
+        if not os.path.isdir(dest_dir):
+            return
+        old_files = glob.glob(os.path.join(dest_dir, "*.old"))
+        for old_f in old_files:
+            basename = os.path.basename(old_f)
+            parts = basename.split("_")
+            if not parts or not parts[0].isdigit():
+                continue
+            idx = parts[0]
+            
+            # Find and delete any newer partial .ldbk files for this instance
+            newer_ldbk = glob.glob(os.path.join(dest_dir, f"{idx}_*.ldbk"))
+            for n_ldbk in newer_ldbk:
+                try:
+                    os.remove(n_ldbk)
+                    logger.info("Rollback: Deleted broken/partial backup %s", os.path.basename(n_ldbk))
+                except OSError as e:
+                    logger.warning("Rollback: Could not delete %s: %s", n_ldbk, e)
+            
+            # Rename .old back to .ldbk
+            orig_name = old_f[:-4]
+            try:
+                os.rename(old_f, orig_name)
+                logger.info("Rollback: Restored good backup %s", os.path.basename(orig_name))
+            except OSError as e:
+                logger.warning("Rollback: Could not restore %s: %s", old_f, e)
+
     # ------------------------------------------------------------------
 
     def start(self):
@@ -328,7 +323,6 @@ class BackupManager(QObject):
             return
 
         self._start_time = time.time()
-        self._save_queue()
         logger.info("Starting backup queue: %d jobs, concurrency=%d", self._total, self._settings.max_concurrency)
 
         for job in self._jobs:
@@ -356,14 +350,12 @@ class BackupManager(QObject):
     def _on_job_done(self, index: int, path: str, duration: float):
         self._done_count += 1
         self._success_count += 1
-        self._save_queue()
         self.signals.queue_progress.emit(self._done_count, self._total)
         self._check_all_complete()
 
     def _on_job_failed(self, index: int, error: str):
         self._done_count += 1
         self._fail_count += 1
-        self._save_queue()
         self.signals.queue_progress.emit(self._done_count, self._total)
         self._check_all_complete()
 
@@ -374,5 +366,4 @@ class BackupManager(QObject):
                 "All backups complete: %d success, %d failed, %.1fs total",
                 self._success_count, self._fail_count, total_time,
             )
-            self.clear_queue_state()
             self.signals.all_complete.emit(self._success_count, self._fail_count, total_time)

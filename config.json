@@ -1,8 +1,8 @@
 {
   "ldconsole_path": "C:\\LDPlayer\\LDPlayer9\\ldconsole.exe",
-  "backup_destination": "D:/Bkupa",
-  "batch_size": 5,
-  "max_concurrency": 5,
+  "backup_destination": "D:/Backup",
+  "restore_path": "D:/Backup",
+  "max_concurrency": 3,
   "keep_old_on_failure": true,
   "discord_webhook_url": "",
   "notify_on_failure": true,

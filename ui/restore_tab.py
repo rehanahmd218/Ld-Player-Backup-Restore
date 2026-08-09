@@ -9,6 +9,7 @@ Restore Tab
 """
 from typing import List, Optional
 import os
+from datetime import datetime
 
 from PyQt5.QtCore import Qt, pyqtSlot
 from PyQt5.QtWidgets import (
@@ -29,11 +30,11 @@ from PyQt5.QtWidgets import (
 
 from config.settings import AppSettings
 from core.ldconsole import InstanceInfo, LDConsoleWrapper
-from core.metadata_store import BackupRecord, MetadataStore
+from core.metadata_store import InstanceRecord, MetadataStore
 from core.restore_engine import RestoreJob, RestoreManager
 from notifications.discord_notifier import send_session_summary
 from ui.widgets.progress_panel import ProgressPanel
-from utils.helpers import format_bytes, format_duration, parse_index_range
+from utils.helpers import format_bytes, format_duration, now_iso, parse_index_range
 
 
 class RestoreTab(QWidget):
@@ -43,7 +44,7 @@ class RestoreTab(QWidget):
         self._settings: Optional[AppSettings] = None
         self._store: Optional[MetadataStore] = None
         self._instances: List[InstanceInfo] = []
-        self._records: List[BackupRecord] = []
+        self._records: List[InstanceRecord] = []
         self._manager: Optional[RestoreManager] = None
         self._init_ui()
 
@@ -192,7 +193,7 @@ class RestoreTab(QWidget):
             self._populate_table([])
             return
 
-        db_records = self._store.get_all(limit=10000)
+        db_records = self._store.get_all_latest() if self._store else []
         
         db_map = {}
         for r in db_records:
@@ -208,8 +209,7 @@ class RestoreTab(QWidget):
                     continue
                 if fname in db_map:
                     rec = db_map[fname]
-                    new_rec = BackupRecord(
-                        id=rec.id,
+                    new_rec = InstanceRecord(
                         instance_index=rec.instance_index,
                         instance_name=rec.instance_name,
                         backup_path=file_path,
@@ -220,13 +220,40 @@ class RestoreTab(QWidget):
                         duration_sec=rec.duration_sec
                     )
                     valid_records.append(new_rec)
+                elif fname.endswith(".ldbk"):
+                    # Fallback: parse {index}_{name}_{YYYYMMDD}_{HHMMSS}.ldbk
+                    parts = fname.replace(".ldbk", "").split("_")
+                    if len(parts) >= 4 and parts[0].isdigit():
+                        idx = int(parts[0])
+                        ts_str = f"{parts[-2]}_{parts[-1]}"
+                        name = "_".join(parts[1:-2])
+                        
+                        ts_formatted = ts_str
+                        try:
+                            ts_obj = datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+                            ts_formatted = ts_obj.strftime("%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            pass
+                            
+                        file_size = os.path.getsize(file_path)
+                        new_rec = InstanceRecord(
+                            instance_index=idx,
+                            instance_name=name,
+                            backup_path=file_path,
+                            checksum="",
+                            timestamp=ts_formatted,
+                            status="success",
+                            file_size=file_size,
+                            duration_sec=0.0
+                        )
+                        valid_records.append(new_rec)
         except Exception:
             pass
             
         self._records = valid_records
         self._populate_table(self._records)
 
-    def _populate_table(self, records: List[BackupRecord]):
+    def _populate_table(self, records: List[InstanceRecord]):
         self._table.setSortingEnabled(False)
         self._table.blockSignals(True)
         self._table.setRowCount(0)
@@ -341,7 +368,7 @@ class RestoreTab(QWidget):
         if item.column() == 0:
             self._update_sel_count()
 
-    def _get_checked_records(self) -> List[BackupRecord]:
+    def _get_checked_records(self) -> List[InstanceRecord]:
         result = []
         seen = set()
         for row in range(self._table.rowCount()):
@@ -378,6 +405,26 @@ class RestoreTab(QWidget):
             QMessageBox.information(self, "Nothing Selected", "Check at least one backup to restore.")
             return
 
+        if self._store:
+            pending = self._store.get_pending_restores()
+            if pending:
+                reply = QMessageBox.question(
+                    self, "Resume Previous Restore?",
+                    f"Found {len(pending)} pending restore(s) from a previous interrupted run.\n\n"
+                    "Click 'Yes' to resume those along with your current selection.\n"
+                    "Click 'No' to discard the old run and start over with only the current selection.",
+                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+                )
+                if reply == QMessageBox.Cancel:
+                    return
+                if reply == QMessageBox.No:
+                    self._store.cancel_pending_restores()
+                else:
+                    sel_indices = {r.instance_index for r in selected}
+                    for p in pending:
+                        if p.instance_index not in sel_indices:
+                            selected.append(p)
+
         confirm = QMessageBox.question(
             self, "Confirm Restore",
             f"Restore {len(selected)} instance(s)?\n\nThis will overwrite their current state.",
@@ -391,9 +438,21 @@ class RestoreTab(QWidget):
                 instance_index=r.instance_index,
                 instance_name=r.instance_name,
                 backup_path=r.backup_path,
+                checksum=r.checksum,
             )
             for r in selected
         ]
+
+        if self._store:
+            for job in jobs:
+                self._store.upsert_restore(
+                    instance_index=job.instance_index,
+                    instance_name=job.instance_name,
+                    backup_path=job.backup_path,
+                    checksum=job.checksum,
+                    timestamp=now_iso(),
+                    status="pending"
+                )
 
         self._progress_panel.setup_jobs(jobs)
         self._overall_bar.setValue(0)
@@ -401,7 +460,7 @@ class RestoreTab(QWidget):
         self._btn_start.setEnabled(False)
         self._btn_cancel.setEnabled(True)
 
-        self._manager = RestoreManager(jobs, self._ldconsole, self._settings)
+        self._manager = RestoreManager(jobs, self._ldconsole, self._settings, self._store)
         ws = self._manager.worker_signals
         ws.job_started.connect(self._progress_panel.on_job_started)
         ws.job_status_changed.connect(self._progress_panel.on_status_changed)
@@ -409,7 +468,7 @@ class RestoreTab(QWidget):
         ws.job_failed.connect(self._progress_panel.on_job_failed)
         self._manager.signals.queue_progress.connect(self._on_queue_progress)
         self._manager.signals.all_complete.connect(self._on_all_complete)
-        self._manager.start(self._instances)
+        self._manager.start()
 
     @pyqtSlot(int, int)
     def _on_queue_progress(self, done: int, total: int):

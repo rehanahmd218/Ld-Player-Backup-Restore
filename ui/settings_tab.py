@@ -1,4 +1,4 @@
-+"""
+"""
 Settings Tab
 ============
 All user-configurable settings with live validation and save-to-disk.
