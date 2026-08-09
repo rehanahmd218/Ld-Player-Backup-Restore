@@ -164,6 +164,7 @@ class RestoreTab(QWidget):
         self._btn_cancel = QPushButton("■  Cancel")
         self._btn_cancel.setObjectName("btn_danger")
         self._btn_cancel.setEnabled(False)
+        self._btn_cancel.clicked.connect(self._on_cancel)
         btn_row.addWidget(self._btn_cancel)
         root.addLayout(btn_row)
 
@@ -469,6 +470,14 @@ class RestoreTab(QWidget):
         self._manager.signals.queue_progress.connect(self._on_queue_progress)
         self._manager.signals.all_complete.connect(self._on_all_complete)
         self._manager.start()
+
+    @pyqtSlot()
+    def _on_cancel(self):
+        if self._manager:
+            self._manager.cancel()
+        self._btn_start.setEnabled(True)
+        self._btn_cancel.setEnabled(False)
+        self._lbl_progress_text.setText("Cancelled.")
 
     @pyqtSlot(int, int)
     def _on_queue_progress(self, done: int, total: int):

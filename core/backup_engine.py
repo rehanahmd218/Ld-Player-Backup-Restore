@@ -88,6 +88,7 @@ class BackupWorker(QRunnable):
         settings: AppSettings,
         store: MetadataStore,
         signals: WorkerSignals,
+        cancel_event,           # threading.Event — set when session is cancelled
     ):
         super().__init__()
         self.job = job
@@ -95,6 +96,7 @@ class BackupWorker(QRunnable):
         self.settings = settings
         self.store = store
         self.signals = signals
+        self._cancel = cancel_event
         self.setAutoDelete(True)
 
     def _emit_status(self, status: JobStatus, msg: str, pct: int = -1):
@@ -103,6 +105,11 @@ class BackupWorker(QRunnable):
             self.signals.job_progress.emit(self.job.index, pct)
 
     def run(self):
+        # Skip immediately if cancelled before this worker even started
+        if self._cancel.is_set():
+            self._emit_status(JobStatus.SKIPPED, "Cancelled before start", 0)
+            self.signals.job_failed.emit(self.job.index, "Cancelled")
+            return
         job = self.job
         start_time = time.time()
         job.started_at = now_iso()
@@ -265,6 +272,7 @@ class BackupManager(QObject):
         self._start_time: float = 0.0
         self._total = len(jobs)
         self._cancelled = False
+        self._cancel_event = __import__("threading").Event()
 
         # Signals
         self.signals = BackupManagerSignals()
@@ -320,12 +328,15 @@ class BackupManager(QObject):
                 self._done_count += 1
                 self._success_count += 1
                 continue
-            worker = BackupWorker(job, self._ldconsole, self._settings, self._store, self._worker_signals)
+            worker = BackupWorker(job, self._ldconsole, self._settings, self._store, self._worker_signals, self._cancel_event)
             self._pool.start(worker)
 
     def cancel(self):
+        """Stop the queue immediately and kill any active ldconsole/7za subprocess."""
         self._cancelled = True
-        self._pool.clear()
+        self._cancel_event.set()
+        self._pool.clear()               # drop queued (not yet started) workers
+        self._ldconsole.kill_current()   # abort the subprocess blocking a worker thread
         logger.info("Backup queue cancelled.")
 
     def wait_for_done(self):

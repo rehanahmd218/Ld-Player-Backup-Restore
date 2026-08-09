@@ -35,21 +35,44 @@ class LDConsoleWrapper:
     # Private helpers
     # ------------------------------------------------------------------
 
+    def __init__(self, ldconsole_path: str):
+        self.ldconsole_path = ldconsole_path
+        self._proc_lock = __import__("threading").Lock()
+        self._current_proc = None          # the live Popen object (if any)
+
+    def kill_current(self):
+        """Kill the subprocess that is currently running inside _run().
+        Safe to call from any thread at any time."""
+        with self._proc_lock:
+            if self._current_proc is not None:
+                try:
+                    self._current_proc.kill()
+                except OSError:
+                    pass
+
     def _run(self, *args, timeout: int = 60) -> Tuple[int, str, str]:
         cmd = [self.ldconsole_path] + [str(a) for a in args]
         logger.debug("CMD: %s", " ".join(cmd))
         try:
-            result = subprocess.run(
+            proc = subprocess.Popen(
                 cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
-            return result.returncode, result.stdout.strip(), result.stderr.strip()
-        except subprocess.TimeoutExpired:
-            logger.error("Timeout running: %s", " ".join(cmd))
-            return -1, "", "Timeout"
+            with self._proc_lock:
+                self._current_proc = proc
+            try:
+                stdout, stderr = proc.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                logger.error("Timeout running: %s", " ".join(cmd))
+                return -1, "", "Timeout"
+            finally:
+                with self._proc_lock:
+                    self._current_proc = None
+            return proc.returncode, stdout.decode(errors="replace").strip(), stderr.decode(errors="replace").strip()
         except FileNotFoundError:
             raise LDConsoleError(f"ldconsole.exe not found at: {self.ldconsole_path}")
         except Exception as e:

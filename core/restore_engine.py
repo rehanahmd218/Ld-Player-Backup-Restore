@@ -65,6 +65,7 @@ class RestoreWorker(QRunnable):
         signals: RestoreWorkerSignals,
         add_lock: threading.Lock,
         store: MetadataStore,
+        cancel_event,           # threading.Event
     ):
         super().__init__()
         self.job = job
@@ -72,6 +73,7 @@ class RestoreWorker(QRunnable):
         self.signals = signals
         self._add_lock = add_lock
         self.store = store
+        self._cancel = cancel_event
         self.setAutoDelete(True)
 
     def _emit(self, status: RestoreStatus, msg: str):
@@ -79,6 +81,11 @@ class RestoreWorker(QRunnable):
         self.signals.job_status_changed.emit(self.job.instance_index, status.value, msg)
 
     def run(self):
+        # Skip immediately if cancelled before this worker even started
+        if self._cancel.is_set():
+            self._emit(RestoreStatus.FAILED, "Cancelled")
+            self.signals.job_failed.emit(self.job.instance_index, "Cancelled")
+            return
         job = self.job
         start = time.time()
         self.signals.job_started.emit(job.instance_index, job.instance_name)
@@ -233,6 +240,7 @@ class RestoreManager(QObject):
         self._success = 0
         self._fail = 0
         self._start_time = 0.0
+        self._cancel_event = __import__("threading").Event()
 
         self.signals = RestoreManagerSignals()
         self.worker_signals = RestoreWorkerSignals()
@@ -242,8 +250,15 @@ class RestoreManager(QObject):
     def start(self):
         self._start_time = time.time()
         for job in self._jobs:
-            w = RestoreWorker(job, self._ldconsole, self.worker_signals, self._add_lock, self._store)
+            w = RestoreWorker(job, self._ldconsole, self.worker_signals, self._add_lock, self._store, self._cancel_event)
             self._pool.start(w)
+
+    def cancel(self):
+        """Stop the queue and kill any active ldconsole subprocess."""
+        self._cancel_event.set()
+        self._pool.clear()
+        self._ldconsole.kill_current()
+        logger.info("Restore queue cancelled.")
 
     def _on_done(self, idx: int, dur: float):
         self._done += 1
