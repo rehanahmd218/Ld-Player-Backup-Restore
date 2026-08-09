@@ -167,8 +167,8 @@ class BackupWorker(QRunnable):
             self._emit_status(JobStatus.VERIFYING, "Checksum OK", 95)
 
             # ---- 6. Delete previous backups for this instance -----------
-            # Match the new naming pattern: {increment}_{name}_{index}_{timestamp}.ldbk
-            existing_backups = glob.glob(os.path.join(dest_dir, f"*_{safe_name}_{job.index}_*.ldbk"))
+            # Match strictly by instance name: {increment}_{safe_name}_{index}_{timestamp}.ldbk
+            existing_backups = glob.glob(os.path.join(dest_dir, f"*_{safe_name}_*.ldbk"))
             for existing in existing_backups:
                 try:
                     os.remove(existing)
