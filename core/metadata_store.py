@@ -139,6 +139,46 @@ class MetadataStore:
                 (instance_index, instance_name, backup_path, checksum, timestamp, status, file_size, duration_sec),
             )
 
+    def upsert_backups_batch(self, records: List[dict]):
+        if not records:
+            return
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO backup_state
+                   (instance_index, instance_name, backup_path, checksum, timestamp, status, file_size, duration_sec)
+                   VALUES (:instance_index, :instance_name, :backup_path, :checksum, :timestamp, :status, :file_size, :duration_sec)
+                   ON CONFLICT(instance_index) DO UPDATE SET
+                   instance_name=excluded.instance_name,
+                   backup_path=excluded.backup_path,
+                   checksum=excluded.checksum,
+                   timestamp=excluded.timestamp,
+                   status=excluded.status,
+                   file_size=excluded.file_size,
+                   duration_sec=excluded.duration_sec
+                """,
+                records,
+            )
+
+    def upsert_restores_batch(self, records: List[dict]):
+        if not records:
+            return
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO restore_state
+                   (instance_index, instance_name, backup_path, checksum, timestamp, status, file_size, duration_sec)
+                   VALUES (:instance_index, :instance_name, :backup_path, :checksum, :timestamp, :status, :file_size, :duration_sec)
+                   ON CONFLICT(instance_index) DO UPDATE SET
+                   instance_name=excluded.instance_name,
+                   backup_path=excluded.backup_path,
+                   checksum=excluded.checksum,
+                   timestamp=excluded.timestamp,
+                   status=excluded.status,
+                   file_size=excluded.file_size,
+                   duration_sec=excluded.duration_sec
+                """,
+                records,
+            )
+
     def cancel_pending_backups(self):
         with self._conn() as conn:
             conn.execute("UPDATE backup_state SET status='cancelled' WHERE status='pending'")
@@ -165,6 +205,21 @@ class MetadataStore:
         with self._conn() as conn:
             row = conn.execute("SELECT * FROM backup_state WHERE instance_index=?", (instance_index,)).fetchone()
             return self._row_to_record(row) if row else None
+
+    def get_latest_restore(self, instance_index: int) -> Optional[InstanceRecord]:
+        with self._conn() as conn:
+            row = conn.execute("SELECT * FROM restore_state WHERE instance_index=?", (instance_index,)).fetchone()
+            return self._row_to_record(row) if row else None
+
+    def get_latest_backup_map(self) -> dict:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM backup_state").fetchall()
+            return {r["instance_index"]: self._row_to_record(r) for r in rows}
+
+    def get_latest_restore_map(self) -> dict:
+        with self._conn() as conn:
+            rows = conn.execute("SELECT * FROM restore_state").fetchall()
+            return {r["instance_index"]: self._row_to_record(r) for r in rows}
 
     def get_all_latest(self) -> List[InstanceRecord]:
         """Return all backup records"""

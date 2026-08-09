@@ -151,6 +151,26 @@ class LDConsoleWrapper:
         logger.error("Restore failed for index %d: %s", index, err or out)
         return False, err or out
 
+    def get_index_by_name(self, name: str) -> int:
+        """Return the live index of the instance with the given name, or -1 if not found."""
+        for inst in self.list_instances():
+            if inst.name == name:
+                return inst.index
+        return -1
+
+    def restore_by_name(self, name: str, file_path: str) -> Tuple[bool, str]:
+        """
+        Restore a backup by resolving the instance name to its current live index.
+        Returns (False, error_message) if the instance cannot be found.
+        """
+        idx = self.get_index_by_name(name)
+        if idx < 0:
+            msg = f"Instance with name '{name}' not found in live instance list."
+            logger.error("restore_by_name: %s", msg)
+            return False, msg
+        logger.info("restore_by_name: resolved '%s' → index %d", name, idx)
+        return self.restore(idx, file_path)
+
     def add_instance(self, name: str) -> Tuple[bool, str]:
         """Create a new empty instance with the given name."""
         logger.info("Creating new instance: %s", name)

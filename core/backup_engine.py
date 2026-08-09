@@ -53,6 +53,7 @@ class BackupJob:
     started_at: str = ""
     completed_at: str = ""
     duration_sec: float = 0.0
+    increment: int = 0   # assigned by BackupManager before the worker starts
 
     def to_dict(self):
         d = asdict(self)
@@ -137,7 +138,11 @@ class BackupWorker(QRunnable):
             os.makedirs(temp_dir, exist_ok=True)
 
             safe_name = "".join(c for c in job.name if c.isalnum() or c in "-_")
-            filename = f"{job.index}_{safe_name}_{ts}.ldbk"
+
+            # Increment is pre-assigned by BackupManager before any worker starts,
+            # so it is stable and unique even across concurrent workers.
+            # Format: {increment}_{name}_{index}_{timestamp}.ldbk
+            filename = f"{job.increment}_{safe_name}_{job.index}_{ts}.ldbk"
             temp_file  = os.path.join(temp_dir, filename)   # 7za writes here
             final_file = os.path.join(dest_dir, filename)   # promoted here on success
 
@@ -162,7 +167,8 @@ class BackupWorker(QRunnable):
             self._emit_status(JobStatus.VERIFYING, "Checksum OK", 95)
 
             # ---- 6. Delete previous backups for this instance -----------
-            existing_backups = glob.glob(os.path.join(dest_dir, f"{job.index}_*.ldbk"))
+            # Match the new naming pattern: {increment}_{name}_{index}_{timestamp}.ldbk
+            existing_backups = glob.glob(os.path.join(dest_dir, f"*_{safe_name}_{job.index}_*.ldbk"))
             for existing in existing_backups:
                 try:
                     os.remove(existing)
@@ -321,6 +327,17 @@ class BackupManager(QObject):
         self._start_time = time.time()
         logger.info("Starting backup queue: %d jobs, concurrency=%d", self._total, self._settings.max_concurrency)
 
+        dest_dir = self._settings.backup_destination
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Count existing .ldbk files once before any workers start.
+        # Each job gets a pre-assigned, unique increment: base+1, base+2, …
+        # This is safe even with concurrent workers since increments are assigned here,
+        # not computed inside the thread.
+        base_count = len(glob.glob(os.path.join(dest_dir, "*.ldbk")))
+        logger.info("Backup session: %d existing files in dest → increments start at %d", base_count, base_count + 1)
+
+        job_number = 0
         for job in self._jobs:
             if self._cancelled:
                 break
@@ -328,6 +345,8 @@ class BackupManager(QObject):
                 self._done_count += 1
                 self._success_count += 1
                 continue
+            job_number += 1
+            job.increment = base_count + job_number
             worker = BackupWorker(job, self._ldconsole, self._settings, self._store, self._worker_signals, self._cancel_event)
             self._pool.start(worker)
 

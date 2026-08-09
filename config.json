@@ -2,7 +2,7 @@
   "ldconsole_path": "C:\\LDPlayer\\LDPlayer9\\ldconsole.exe",
   "backup_destination": "D:/Backup",
   "restore_path": "D:/Backup",
-  "max_concurrency": 5,
+  "max_concurrency": 4,
   "keep_old_on_failure": true,
   "discord_webhook_url": "",
   "notify_on_failure": true,

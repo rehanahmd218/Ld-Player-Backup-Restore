@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot
 from PyQt5.QtWidgets import (
+    QApplication,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -21,6 +22,7 @@ from PyQt5.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QProgressBar,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QSpinBox,
@@ -481,45 +483,98 @@ class BackupTab(QWidget):
         def proceed():
             if not self._validate():
                 return
-            jobs = self._get_checked_jobs()
-            if not jobs:
+            checked_jobs = self._get_checked_jobs()
+            if not checked_jobs:
                 QMessageBox.information(self, "Nothing Selected",
                                         "Check at least one instance in the table.")
                 return
 
-            if self._store:
-                pending_records = self._store.get_pending_backups()
-                if pending_records:
-                    reply = QMessageBox.question(
-                        self, "Resume Previous Session?",
-                        f"Found {len(pending_records)} pending backup(s) from a previous interrupted run.\n\n"
-                        "Click 'Yes' to resume those along with your current selection.\n"
-                        "Click 'No' to discard the old run and start over with only the current selection.",
-                        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
-                    )
-                    if reply == QMessageBox.Cancel:
-                        return
-                    if reply == QMessageBox.No:
-                        self._store.cancel_pending_backups()
-                        self._resume_frame.setVisible(False)
+            # Show progress indicator so UI doesn't hang on large selections
+            dlg = QProgressDialog("Initializing backup queue… Please wait", None, 0, 0, self)
+            dlg.setWindowTitle("Preparing Session")
+            dlg.setWindowModality(Qt.WindowModal)
+            dlg.setCancelButton(None)
+            dlg.show()
+            QApplication.processEvents()
+
+            try:
+                jobs_to_run = []
+                batch_to_upsert = []
+
+                if self._store:
+                    pending_records = self._store.get_pending_backups()
+                    if pending_records:
+                        dlg.close()
+                        reply = QMessageBox.question(
+                            self, "Resume Previous Session?",
+                            f"Found {len(pending_records)} pending backup(s) from a previous interrupted run.\n\n"
+                            "Click 'Yes' to resume those pending backups.\n"
+                            "Click 'No' to discard the old run and start fresh with your current selection.",
+                            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+                        )
+                        if reply == QMessageBox.Cancel:
+                            return
+                        dlg.show()
+                        QApplication.processEvents()
+
+                        if reply == QMessageBox.No:
+                            self._store.cancel_pending_backups()
+                            self._resume_frame.setVisible(False)
+                            for job in checked_jobs:
+                                batch_to_upsert.append({
+                                    "instance_index": job.index,
+                                    "instance_name": job.name,
+                                    "backup_path": "",
+                                    "checksum": "",
+                                    "timestamp": now_iso(),
+                                    "status": "pending",
+                                    "file_size": 0,
+                                    "duration_sec": 0.0,
+                                })
+                                jobs_to_run.append(job)
+                        else:
+                            self._resume_frame.setVisible(False)
+                            pending_indices = {rec.instance_index for rec in pending_records}
+                            for rec in pending_records:
+                                jobs_to_run.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
+
+                            latest_map = self._store.get_latest_backup_map()
+                            for job in checked_jobs:
+                                if job.index not in pending_indices:
+                                    rec = latest_map.get(job.index)
+                                    if not rec or rec.status != "success":
+                                        batch_to_upsert.append({
+                                            "instance_index": job.index,
+                                            "instance_name": job.name,
+                                            "backup_path": "",
+                                            "checksum": "",
+                                            "timestamp": now_iso(),
+                                            "status": "pending",
+                                            "file_size": 0,
+                                            "duration_sec": 0.0,
+                                        })
+                                        jobs_to_run.append(job)
                     else:
-                        self._resume_frame.setVisible(False)
-                        job_indices = {j.index for j in jobs}
-                        for rec in pending_records:
-                            if rec.instance_index not in job_indices:
-                                jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
+                        for job in checked_jobs:
+                            batch_to_upsert.append({
+                                "instance_index": job.index,
+                                "instance_name": job.name,
+                                "backup_path": "",
+                                "checksum": "",
+                                "timestamp": now_iso(),
+                                "status": "pending",
+                                "file_size": 0,
+                                "duration_sec": 0.0,
+                            })
+                            jobs_to_run.append(job)
 
-                for job in jobs:
-                    self._store.upsert_backup(
-                        instance_index=job.index,
-                        instance_name=job.name,
-                        backup_path="",
-                        checksum="",
-                        timestamp=now_iso(),
-                        status="pending"
-                    )
+                    self._store.upsert_backups_batch(batch_to_upsert)
+                else:
+                    jobs_to_run = checked_jobs
 
-            self._start_run(jobs)
+                self._start_run(jobs_to_run)
+            finally:
+                dlg.close()
 
         self._attempt_cleanup_and_proceed(proceed)
 
@@ -537,27 +592,49 @@ class BackupTab(QWidget):
             if not self._validate():
                 return
             if self._store:
-                pending_records = self._store.get_pending_backups()
-                if pending_records:
+                dlg = QProgressDialog("Resuming backup session… Please wait", None, 0, 0, self)
+                dlg.setWindowTitle("Resuming Session")
+                dlg.setWindowModality(Qt.WindowModal)
+                dlg.setCancelButton(None)
+                dlg.show()
+                QApplication.processEvents()
+
+                try:
+                    pending_records = self._store.get_pending_backups()
+                    checked_jobs = self._get_checked_jobs()
+
+                    if not pending_records and not checked_jobs:
+                        self._resume_frame.setVisible(False)
+                        QMessageBox.information(self, "No Pending Backups", "There are no pending backups to resume.")
+                        return
+
                     self._resume_frame.setVisible(False)
-                    jobs = self._get_checked_jobs()
-                    job_indices = {j.index for j in jobs}
-                    for rec in pending_records:
-                        if rec.instance_index not in job_indices:
-                            jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
+                    jobs_to_run = [BackupJob(index=rec.instance_index, name=rec.instance_name) for rec in pending_records]
+                    pending_indices = {rec.instance_index for rec in pending_records}
 
-                    for job in jobs:
-                        self._store.upsert_backup(
-                            instance_index=job.index,
-                            instance_name=job.name,
-                            backup_path="",
-                            checksum="",
-                            timestamp=now_iso(),
-                            status="pending"
-                        )
+                    batch_to_upsert = []
+                    latest_map = self._store.get_latest_backup_map()
+                    for job in checked_jobs:
+                        if job.index not in pending_indices:
+                            rec = latest_map.get(job.index)
+                            if not rec or rec.status != "success":
+                                batch_to_upsert.append({
+                                    "instance_index": job.index,
+                                    "instance_name": job.name,
+                                    "backup_path": "",
+                                    "checksum": "",
+                                    "timestamp": now_iso(),
+                                    "status": "pending",
+                                    "file_size": 0,
+                                    "duration_sec": 0.0,
+                                })
+                                jobs_to_run.append(job)
 
-                    self._start_run(jobs)
-                
+                    self._store.upsert_backups_batch(batch_to_upsert)
+                    self._start_run(jobs_to_run)
+                finally:
+                    dlg.close()
+
         self._attempt_cleanup_and_proceed(proceed)
 
     @pyqtSlot()

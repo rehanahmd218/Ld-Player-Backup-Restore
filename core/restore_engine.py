@@ -65,7 +65,8 @@ class RestoreWorker(QRunnable):
         signals: RestoreWorkerSignals,
         add_lock: threading.Lock,
         store: MetadataStore,
-        cancel_event,           # threading.Event
+        cancel_event,                       # threading.Event
+        instance_snapshot: dict,            # pre-fetched {name: index} from RestoreManager
     ):
         super().__init__()
         self.job = job
@@ -74,6 +75,7 @@ class RestoreWorker(QRunnable):
         self._add_lock = add_lock
         self.store = store
         self._cancel = cancel_event
+        self._snapshot = instance_snapshot  # shared read-only snapshot; no lock needed
         self.setAutoDelete(True)
 
     def _emit(self, status: RestoreStatus, msg: str):
@@ -118,54 +120,57 @@ class RestoreWorker(QRunnable):
                     )
                     raise RuntimeError("Checksum mismatch! Restore aborted for safety.")
 
-            # Fetch live list of instances to avoid stale data
-            existing_indices = {i.index for i in self.ldconsole.list_instances()}
-            target_index = job.instance_index
+            # ---- 2. Resolve instance by NAME using the pre-fetched snapshot ----------
+            # No subprocess call needed here — the manager fetched the list once before
+            # any workers started.
+            instance_name = job.instance_name
+            target_index = self._snapshot.get(instance_name, -1)
 
-            if target_index not in existing_indices:
-                # Need to create the instance first
-                self._emit(RestoreStatus.CREATING, f"Instance not found — creating…")
-                
+            if target_index == -1:
+                # Instance not in the snapshot — need to create it
+                self._emit(RestoreStatus.CREATING, "Instance not found — creating…")
+
                 with self._add_lock:
-                    before_indices = {i.index for i in self.ldconsole.list_instances()}
-                    
-                    ok, msg = self.ldconsole.add_instance(job.instance_name)
-                    if not ok:
-                        raise RuntimeError(f"Could not create instance: {msg}")
-                    
-                    # Determine the actual index assigned by LDConsole
-                    after_instances = self.ldconsole.list_instances()
-                    new_indices = [i.index for i in after_instances if i.index not in before_indices]
-                    
-                    if new_indices:
-                        target_index = new_indices[0]
-                        logger.info("Created new instance: got actual idx=%d (requested name=%s)", target_index, job.instance_name)
-                    else:
-                        logger.warning("Could not identify new index, attempting fallback to original idx %d", target_index)
+                    add_ok, add_msg = self.ldconsole.add_instance(instance_name)
+                    if not add_ok:
+                        raise RuntimeError(f"Could not create instance: {add_msg}")
+                    # Re-query once after creation to find the newly assigned index
+                    target_index = self.ldconsole.get_index_by_name(instance_name)
+                    if target_index == -1:
+                        raise RuntimeError(f"Created instance '{instance_name}' but could not find its index.")
+                    logger.info("Created new instance '%s' → index %d", instance_name, target_index)
 
                 self._emit(RestoreStatus.CREATING, "Instance created")
             else:
                 self._emit(RestoreStatus.RESTORING, "Instance exists — overwriting…")
 
-            # Run restore using the TARGET index (which might be different from the job index if newly created)
+            # ---- 3. Stop instance if running and wait 2.5s for stabilization --------
+            if self.ldconsole.is_running(target_index):
+                self._emit(RestoreStatus.RESTORING, "Stopping instance before restore…")
+                stopped = self.ldconsole.stop_instance(target_index)
+                if not stopped:
+                    raise RuntimeError(f"Could not stop instance {target_index} prior to restore.")
+                self._emit(RestoreStatus.RESTORING, "Waiting for process to stabilize…")
+                time.sleep(2.5)
+
+            # ---- 4. Restore directly by the resolved index -----------------------
             self._emit(RestoreStatus.RESTORING, "Restoring backup…")
             ok, msg = self.ldconsole.restore(target_index, job.backup_path)
-            
-            # If it failed because the player doesn't exist (e.g. deleted in background), try creating it now as a fallback
-            if not ok and "player don't exist" in msg.lower():
-                logger.warning("Restore failed with 'player don't exist' for idx=%d. Attempting fallback creation.", target_index)
+
+            # Fallback: if ldconsole says the player doesn't exist, create and retry once
+            if not ok and ("player don't exist" in msg.lower() or "not found" in msg.lower()):
+                logger.warning("Restore failed for '%s' (idx=%d). Attempting fallback creation.", instance_name, target_index)
                 self._emit(RestoreStatus.CREATING, "Instance actually missing — creating…")
                 with self._add_lock:
-                    before_indices = {i.index for i in self.ldconsole.list_instances()}
-                    add_ok, add_msg = self.ldconsole.add_instance(job.instance_name)
+                    add_ok, add_msg = self.ldconsole.add_instance(instance_name)
                     if not add_ok:
                         raise RuntimeError(f"Fallback creation failed: {add_msg}")
-                    after_instances = self.ldconsole.list_instances()
-                    new_indices = [i.index for i in after_instances if i.index not in before_indices]
-                    if new_indices:
-                        target_index = new_indices[0]
-                        logger.info("Fallback created new instance: got actual idx=%d", target_index)
-                
+                    target_index = self.ldconsole.get_index_by_name(instance_name)
+                    if target_index == -1:
+                        raise RuntimeError(f"Fallback: created '{instance_name}' but could not find its index.")
+                    logger.info("Fallback created '%s' → index %d", instance_name, target_index)
+
+                time.sleep(2.5)
                 self._emit(RestoreStatus.RESTORING, "Retrying restore on new instance…")
                 ok, msg = self.ldconsole.restore(target_index, job.backup_path)
 
@@ -191,7 +196,7 @@ class RestoreWorker(QRunnable):
 
             self._emit(RestoreStatus.DONE, "Restore complete ✓")
             self.signals.job_done.emit(job.instance_index, duration)
-            logger.info("Restore DONE: orig_idx=%d target_idx=%d %.1fs", job.instance_index, target_index, duration)
+            logger.info("Restore DONE: name='%s' orig_idx=%d  %.1fs", job.instance_name, job.instance_index, duration)
 
         except Exception as exc:
             duration = time.time() - start
@@ -249,8 +254,21 @@ class RestoreManager(QObject):
 
     def start(self):
         self._start_time = time.time()
+
+        # Fetch the live instance list ONCE for the entire session.
+        # Each worker receives this snapshot and does a plain dict lookup
+        # instead of calling list_instances() individually.
+        logger.info("Fetching live instance list for restore session…")
+        live = self._ldconsole.list_instances()
+        snapshot = {i.name: i.index for i in live}
+        logger.info("Snapshot ready: %d instances", len(snapshot))
+
         for job in self._jobs:
-            w = RestoreWorker(job, self._ldconsole, self.worker_signals, self._add_lock, self._store, self._cancel_event)
+            w = RestoreWorker(
+                job, self._ldconsole, self.worker_signals,
+                self._add_lock, self._store, self._cancel_event,
+                instance_snapshot=snapshot,
+            )
             self._pool.start(w)
 
     def cancel(self):
