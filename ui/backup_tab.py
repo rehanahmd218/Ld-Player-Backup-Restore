@@ -238,9 +238,6 @@ class BackupTab(QWidget):
         self._populate_table(instances)
 
     def check_resume(self):
-        if self._settings and self._settings.backup_destination:
-            BackupManager.cleanup_stale_backups(self._settings.backup_destination)
-            
         if not self._store: return
         pending = self._store.get_pending_backups()
         if pending:
@@ -445,71 +442,72 @@ class BackupTab(QWidget):
         self._manager.signals.all_complete.connect(self._on_all_complete)
         self._manager.start()
 
+    def _attempt_cleanup_and_proceed(self, callback):
+        """Attempts to clean up .tmp files. If locked, shows a wait dialog."""
+        if not self._settings or not self._settings.backup_destination:
+            callback()
+            return
+            
+        dest_dir = self._settings.backup_destination
+        if BackupManager.cleanup_stale_backups(dest_dir):
+            callback()
+            return
+            
+        # Files are locked, show wait dialog
+        from PyQt5.QtWidgets import QProgressDialog, QDialog
+        from PyQt5.QtCore import QTimer
+        
+        dialog = QProgressDialog("Please wait, previous background backup is still running...", "Cancel", 0, 0, self)
+        dialog.setWindowTitle("Cleaning up...")
+        dialog.setWindowModality(Qt.WindowModal)
+        
+        timer = QTimer(self)
+        
+        def check_again():
+            if BackupManager.cleanup_stale_backups(dest_dir):
+                timer.stop()
+                dialog.accept()
+                
+        timer.timeout.connect(check_again)
+        timer.start(1000)
+        
+        if dialog.exec_() == QDialog.Accepted:
+            callback()
+        else:
+            timer.stop()
+
     @pyqtSlot()
     def _on_start(self):
-        if not self._validate():
-            return
-        jobs = self._get_checked_jobs()
-        if not jobs:
-            QMessageBox.information(self, "Nothing Selected",
-                                    "Check at least one instance in the table.")
-            return
+        def proceed():
+            if not self._validate():
+                return
+            jobs = self._get_checked_jobs()
+            if not jobs:
+                QMessageBox.information(self, "Nothing Selected",
+                                        "Check at least one instance in the table.")
+                return
 
-        if self._store:
-            pending_records = self._store.get_pending_backups()
-            if pending_records:
-                reply = QMessageBox.question(
-                    self, "Resume Previous Session?",
-                    f"Found {len(pending_records)} pending backup(s) from a previous interrupted run.\n\n"
-                    "Click 'Yes' to resume those along with your current selection.\n"
-                    "Click 'No' to discard the old run and start over with only the current selection.",
-                    QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
-                )
-                if reply == QMessageBox.Cancel:
-                    return
-                if reply == QMessageBox.No:
-                    self._store.cancel_pending_backups()
-                    self._resume_frame.setVisible(False)
-                else:
-                    self._resume_frame.setVisible(False)
-                    job_indices = {j.index for j in jobs}
-                    for rec in pending_records:
-                        if rec.instance_index not in job_indices:
-                            jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
-
-            for job in jobs:
-                self._store.upsert_backup(
-                    instance_index=job.index,
-                    instance_name=job.name,
-                    backup_path="",
-                    checksum="",
-                    timestamp=now_iso(),
-                    status="pending"
-                )
-
-        self._start_run(jobs)
-
-    @pyqtSlot()
-    def _on_cancel(self):
-        if self._manager:
-            self._manager.cancel()
-        self._btn_start.setEnabled(True)
-        self._btn_cancel.setEnabled(False)
-        self._lbl_status.setText("Cancelled.")
-
-    @pyqtSlot()
-    def _on_resume(self):
-        if not self._validate():
-            return
-        if self._store:
-            pending_records = self._store.get_pending_backups()
-            if pending_records:
-                self._resume_frame.setVisible(False)
-                jobs = self._get_checked_jobs()
-                job_indices = {j.index for j in jobs}
-                for rec in pending_records:
-                    if rec.instance_index not in job_indices:
-                        jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
+            if self._store:
+                pending_records = self._store.get_pending_backups()
+                if pending_records:
+                    reply = QMessageBox.question(
+                        self, "Resume Previous Session?",
+                        f"Found {len(pending_records)} pending backup(s) from a previous interrupted run.\n\n"
+                        "Click 'Yes' to resume those along with your current selection.\n"
+                        "Click 'No' to discard the old run and start over with only the current selection.",
+                        QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel
+                    )
+                    if reply == QMessageBox.Cancel:
+                        return
+                    if reply == QMessageBox.No:
+                        self._store.cancel_pending_backups()
+                        self._resume_frame.setVisible(False)
+                    else:
+                        self._resume_frame.setVisible(False)
+                        job_indices = {j.index for j in jobs}
+                        for rec in pending_records:
+                            if rec.instance_index not in job_indices:
+                                jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
 
                 for job in jobs:
                     self._store.upsert_backup(
@@ -521,13 +519,55 @@ class BackupTab(QWidget):
                         status="pending"
                     )
 
-                self._start_run(jobs)
+            self._start_run(jobs)
+
+        self._attempt_cleanup_and_proceed(proceed)
+
+    @pyqtSlot()
+    def _on_cancel(self):
+        if self._manager:
+            self._manager.cancel()
+        self._btn_start.setEnabled(True)
+        self._btn_cancel.setEnabled(False)
+        self._lbl_status.setText("Cancelled.")
+
+    @pyqtSlot()
+    def _on_resume(self):
+        def proceed():
+            if not self._validate():
+                return
+            if self._store:
+                pending_records = self._store.get_pending_backups()
+                if pending_records:
+                    self._resume_frame.setVisible(False)
+                    jobs = self._get_checked_jobs()
+                    job_indices = {j.index for j in jobs}
+                    for rec in pending_records:
+                        if rec.instance_index not in job_indices:
+                            jobs.append(BackupJob(index=rec.instance_index, name=rec.instance_name))
+
+                    for job in jobs:
+                        self._store.upsert_backup(
+                            instance_index=job.index,
+                            instance_name=job.name,
+                            backup_path="",
+                            checksum="",
+                            timestamp=now_iso(),
+                            status="pending"
+                        )
+
+                    self._start_run(jobs)
+                
+        self._attempt_cleanup_and_proceed(proceed)
 
     @pyqtSlot()
     def _on_discard_resume(self):
-        if self._store:
-            self._store.cancel_pending_backups()
-        self._resume_frame.setVisible(False)
+        def proceed():
+            if self._store:
+                self._store.cancel_pending_backups()
+            self._resume_frame.setVisible(False)
+            
+        self._attempt_cleanup_and_proceed(proceed)
 
     @pyqtSlot(int, str)
     def _on_worker_failed(self, index: int, error: str):

@@ -5,6 +5,7 @@ Hosts all tabs, wires signals between components, and manages
 the LDConsole startup check.
 """
 import os
+import subprocess
 import sys
 from typing import List, Optional
 
@@ -30,6 +31,133 @@ from ui.settings_tab import SettingsTab
 from utils.logger import get_logger, setup_logging
 
 logger = get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Background thread: full startup cleanup (keeps UI responsive)
+# ---------------------------------------------------------------------------
+_STALE_PROCESSES = ["ldconsole.exe", "dnplayer.exe", "7za.exe"]
+# dnplayer.exe is LDPlayer's emulator process.
+# 7za.exe (7-Zip) is the actual archiver LDPlayer uses to write .ldbk files
+# — it holds the exclusive write lock until it finishes or is killed.
+
+
+class StartupCleanupThread(QThread):
+    """
+    Runs entirely off the main thread:
+      1. Kills all ldconsole.exe + dnplayer.exe processes.
+      2. Waits briefly for the OS to release file handles.
+      3. Deletes all files from the <backup_dest>_temp sibling folder.
+    Emits `done(killed, deleted)` when finished regardless of errors.
+    """
+    done = pyqtSignal(int, int)   # (processes_killed, temp_files_deleted)
+
+    def __init__(self, dest_dir: str, parent=None):
+        super().__init__(parent)
+        self._dest_dir = dest_dir
+
+    @staticmethod
+    def _get_pids(image_name: str):
+        """Return all PIDs for the given image name via tasklist CSV output."""
+        try:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/NH", "/FO", "CSV"],
+                capture_output=True, text=True, timeout=10
+            )
+            pids = []
+            for line in result.stdout.splitlines():
+                parts = line.strip().replace('"', '').split(",")
+                if len(parts) >= 2 and parts[0].lower() == image_name.lower():
+                    try:
+                        pids.append(int(parts[1]))
+                    except ValueError:
+                        pass
+            return pids
+        except Exception:
+            return []
+
+    @staticmethod
+    def _kill_pid(pid: int) -> bool:
+        try:
+            subprocess.run(
+                ["taskkill", "/F", "/PID", str(pid)],
+                capture_output=True, timeout=5
+            )
+            return True
+        except Exception:
+            return False
+
+    def run(self):
+        import time
+
+        killed = 0
+        deleted = 0
+
+        def _kill_all_stale() -> int:
+            """Kill every listed stale process; return count killed."""
+            count = 0
+            for proc in _STALE_PROCESSES:
+                for pid in self._get_pids(proc):
+                    if self._kill_pid(pid):
+                        count += 1
+            return count
+
+        def _try_delete(files: list) -> list:
+            """Attempt deletion with retries. Returns list of files still locked."""
+            still_locked = []
+            for temp_f in files:
+                removed = False
+                for _ in range(6):                 # 6 attempts × 1.5 s = 9 s max
+                    try:
+                        os.remove(temp_f)
+                        removed = True
+                        break
+                    except PermissionError:
+                        time.sleep(1.5)            # still locked — wait and retry
+                    except OSError:
+                        removed = True             # already gone
+                        break
+                if not removed:
+                    still_locked.append(temp_f)
+            return still_locked
+
+        def _list_temp_files() -> list:
+            """Return all files inside the _temp sibling folder."""
+            temp_dir = self._dest_dir + "_temp"
+            if not os.path.isdir(temp_dir):
+                return []
+            return [
+                os.path.join(temp_dir, f)
+                for f in os.listdir(temp_dir)
+                if os.path.isfile(os.path.join(temp_dir, f))
+            ]
+
+        # ── Round 1: kill everything, wait, delete ────────────────────────────
+        killed += _kill_all_stale()
+        if killed > 0:
+            time.sleep(2.5)    # let OS flush all write buffers
+
+        remaining = []
+        temp_files = _list_temp_files()
+        if temp_files:
+            still_locked = _try_delete(temp_files)
+            deleted += len(temp_files) - len(still_locked)
+            remaining = still_locked
+
+        # ── Round 2: some 7za instances are slower — kill survivors + retry ───
+        if remaining:
+            killed += _kill_all_stale()
+            time.sleep(2.0)
+            still_locked2 = _try_delete(remaining)
+            deleted += len(remaining) - len(still_locked2)
+            for f in still_locked2:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Startup cleanup: could not delete locked file after 2 rounds: %s", f
+                )
+
+        self.done.emit(killed, deleted)
+
 
 
 # ---------------------------------------------------------------------------
@@ -62,11 +190,12 @@ class MainWindow(QMainWindow):
         self._store = MetadataStore()
         self._instances: List[InstanceInfo] = []
         self._loader_thread: Optional[InstanceLoaderThread] = None
+        self._killer_thread: Optional[StartupCleanupThread] = None
 
         self._setup_logging()
         self._init_ui()
         self._apply_settings(self._settings)
-        self._check_ldconsole_on_startup()
+        self._kill_stale_ldconsole()   # non-blocking; chains into startup check
 
     # ------------------------------------------------------------------
     def _setup_logging(self):
@@ -161,6 +290,53 @@ class MainWindow(QMainWindow):
         self._tab_dashboard.refresh_stats(success, failed)
         self._tab_dashboard.refresh_records()   # refresh backup count card
         self._tab_restore.refresh_records()     # refresh restore table too
+
+    # ------------------------------------------------------------------
+    # Kill stale ldconsole.exe processes on startup (non-blocking)
+    # ------------------------------------------------------------------
+    def _kill_stale_ldconsole(self):
+        """Show a 'please wait' popup, then spawn a background thread that kills
+        stale processes AND cleans temp files — entirely off the main thread."""
+        from PyQt5.QtCore import Qt
+        from PyQt5.QtWidgets import QDialog, QLabel, QVBoxLayout
+
+        # Build a non-blocking 'please wait' popup
+        self._cleanup_dlg = QDialog(self)
+        self._cleanup_dlg.setWindowTitle("Starting Up")
+        self._cleanup_dlg.setWindowFlags(
+            Qt.Dialog | Qt.WindowTitleHint | Qt.CustomizeWindowHint |
+            Qt.WindowStaysOnTopHint
+        )
+        self._cleanup_dlg.setFixedSize(340, 100)
+        layout = QVBoxLayout(self._cleanup_dlg)
+        layout.setContentsMargins(20, 16, 20, 16)
+        lbl = QLabel(
+            "⏳  Please wait — clearing previous session…\n"
+            "Terminating stale processes and removing temp files."
+        )
+        lbl.setWordWrap(True)
+        layout.addWidget(lbl)
+        self._cleanup_dlg.show()          # show() not exec_() — non-blocking!
+
+        self._lbl_status.setText("Cleaning up stale processes…")
+        dest_dir = self._settings.backup_destination
+        self._killer_thread = StartupCleanupThread(dest_dir, self)
+        self._killer_thread.done.connect(self._on_killer_done)
+        self._killer_thread.start()
+
+    @pyqtSlot(int, int)
+    def _on_killer_done(self, killed: int, deleted: int):
+        # Close the popup
+        if hasattr(self, "_cleanup_dlg") and self._cleanup_dlg:
+            self._cleanup_dlg.accept()
+            self._cleanup_dlg = None
+        # All I/O already done in the background thread — just log and continue.
+        if killed > 0:
+            logger.info("Startup: terminated %d stale process(es) (ldconsole + dnplayer + 7za).", killed)
+        if deleted > 0:
+            logger.info("Startup: deleted %d temp backup file(s) from _temp folder.", deleted)
+        # Now proceed with the normal startup check on the main thread.
+        self._check_ldconsole_on_startup()
 
     # ------------------------------------------------------------------
     # LDConsole startup check

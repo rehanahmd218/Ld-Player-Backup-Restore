@@ -110,6 +110,12 @@ class BackupWorker(QRunnable):
         self.signals.job_started.emit(job.index, job.name)
         self._emit_status(JobStatus.RUNNING, "Starting…", 0)
 
+        # Resolve paths up front so the except block can reference temp_file
+        dest_dir = self.settings.backup_destination
+        temp_dir = dest_dir + "_temp"   # sibling folder, same drive → rename is atomic
+        temp_file: str = ""
+        final_file: str = ""
+
         try:
             # ---- 1. Stop instance ----------------------------------------
             self._emit_status(JobStatus.STOPPING, "Stopping instance…", 5)
@@ -118,59 +124,58 @@ class BackupWorker(QRunnable):
                 raise RuntimeError("Could not stop the instance within timeout.")
             self._emit_status(JobStatus.STOPPING, "Instance stopped", 15)
 
-            # ---- 2. Build destination path with timestamp ----------------
+            # ---- 2. Build paths ------------------------------------------
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            dest_dir = self.settings.backup_destination
             os.makedirs(dest_dir, exist_ok=True)
-            safe_name = "".join(c for c in job.name if c.isalnum() or c in "-_")
-            final_filename = f"{job.index}_{safe_name}_{ts}.ldbk"
-            final_backup_file = os.path.join(dest_dir, final_filename)
-            
-            # Use a temporary extension during the backup process
-            temp_filename = f"{job.index}_{safe_name}_{ts}.tmp.ldbk"
-            backup_file = os.path.join(dest_dir, temp_filename)
+            os.makedirs(temp_dir, exist_ok=True)
 
-            # ---- 4. Run backup --------------------------------------------
+            safe_name = "".join(c for c in job.name if c.isalnum() or c in "-_")
+            filename = f"{job.index}_{safe_name}_{ts}.ldbk"
+            temp_file  = os.path.join(temp_dir, filename)   # 7za writes here
+            final_file = os.path.join(dest_dir, filename)   # promoted here on success
+
+            # ---- 3. Run backup → into temp folder ------------------------
             self._emit_status(JobStatus.BACKING_UP, "Backing up…", 20)
-            ok, msg = self.ldconsole.backup(job.index, backup_file)
+            ok, msg = self.ldconsole.backup(job.index, temp_file)
             if not ok:
                 raise RuntimeError(f"ldconsole backup failed: {msg}")
             self._emit_status(JobStatus.BACKING_UP, "Backup file created", 75)
 
-            # ---- 5. Verify backup file exists -----------------------------
-            if not os.path.exists(backup_file):
+            # ---- 4. Verify temp file exists ------------------------------
+            if not os.path.exists(temp_file):
                 raise RuntimeError("Backup file not found after backup command succeeded.")
 
-            file_size = os.path.getsize(backup_file)
+            file_size = os.path.getsize(temp_file)
 
-            # ---- 6. Compute checksum -------------------------------------
+            # ---- 5. Compute checksum ------------------------------------
             self._emit_status(JobStatus.VERIFYING, "Verifying checksum…", 80)
-            checksum = compute_sha256(backup_file)
+            checksum = compute_sha256(temp_file)
             if not checksum:
                 raise RuntimeError("Checksum computation failed.")
             self._emit_status(JobStatus.VERIFYING, "Checksum OK", 95)
 
-            # ---- 7. Delete previous good backups for this instance --------
+            # ---- 6. Delete previous backups for this instance -----------
             existing_backups = glob.glob(os.path.join(dest_dir, f"{job.index}_*.ldbk"))
             for existing in existing_backups:
-                if existing != backup_file:  # Don't delete our temp file yet
-                    try:
-                        os.remove(existing)
-                    except OSError as e:
-                        logger.warning("Could not delete old backup: %s", e)
-                        
-            # ---- 8. Rename temporary backup to final ----------------------
-            try:
-                os.rename(backup_file, final_backup_file)
-            except OSError as e:
-                raise RuntimeError(f"Failed to finalize backup file: {e}")
+                try:
+                    os.remove(existing)
+                except OSError as e:
+                    logger.warning("Could not delete old backup: %s", e)
 
-            # ---- 9. Record to DB -----------------------------------------
+            # ---- 7. Atomically promote temp → final (same drive = rename)
+            # Status is set to DONE only AFTER this succeeds.
+            self._emit_status(JobStatus.VERIFYING, "Finalising backup…", 98)
+            try:
+                os.replace(temp_file, final_file)
+            except OSError as e:
+                raise RuntimeError(f"Failed to move backup to final location: {e}")
+
+            # ---- 8. Record to DB ----------------------------------------
             duration = time.time() - start_time
             self.store.upsert_backup(
                 instance_index=job.index,
                 instance_name=job.name,
-                backup_path=final_backup_file,
+                backup_path=final_file,
                 checksum=checksum,
                 timestamp=now_iso(),
                 status="success",
@@ -178,14 +183,14 @@ class BackupWorker(QRunnable):
                 duration_sec=duration,
             )
 
-            # ---- Done ----------------------------------------------------
+            # ---- Done — only reached after successful move ---------------
             job.status = JobStatus.DONE
-            job.backup_path = final_backup_file
+            job.backup_path = final_file
             job.duration_sec = duration
             job.completed_at = now_iso()
             self._emit_status(JobStatus.DONE, "Backup complete ✓", 100)
-            self.signals.job_done.emit(job.index, final_backup_file, duration)
-            logger.info("Backup DONE: index=%d  file=%s  %.1fs", job.index, final_backup_file, duration)
+            self.signals.job_done.emit(job.index, final_file, duration)
+            logger.info("Backup DONE: index=%d  file=%s  %.1fs", job.index, final_file, duration)
 
         except Exception as exc:
             duration = time.time() - start_time
@@ -195,10 +200,10 @@ class BackupWorker(QRunnable):
             job.duration_sec = duration
             job.completed_at = now_iso()
 
-            # Rollback: delete partial temporary file
-            if os.path.exists(backup_file):
+            # Rollback: delete partial file from the temp folder
+            if temp_file and os.path.exists(temp_file):
                 try:
-                    os.remove(backup_file)
+                    os.remove(temp_file)
                 except OSError:
                     pass
 
@@ -272,42 +277,30 @@ class BackupManager(QObject):
 
     # ------------------------------------------------------------------
 
-    # Run / Cancel
     @staticmethod
-    def cleanup_stale_backups(dest_dir: str):
-        """Clean up any temporary backup files left over from a crash."""
-        if not os.path.isdir(dest_dir):
-            return
-            
-        # Kill any lingering ldconsole.exe processes that might be locking the .tmp files
-        import subprocess
-        try:
-            subprocess.run(
-                ["taskkill", "/F", "/IM", "ldconsole.exe"],
-                capture_output=True,
-                creationflags=subprocess.CREATE_NO_WINDOW
-            )
-            logger.debug("Cleanup: Killed lingering ldconsole.exe processes.")
-        except Exception as e:
-            logger.warning("Cleanup: Failed to kill ldconsole.exe: %s", e)
-            
-        # Clean up the new .tmp.ldbk files
-        temp_files = glob.glob(os.path.join(dest_dir, "*.tmp.ldbk"))
-        for temp_f in temp_files:
+    def cleanup_stale_backups(dest_dir: str) -> bool:
+        """
+        Wipes the _temp sibling folder that holds in-progress backup files.
+        Returns True if the folder is clean (or didn't exist).
+        Returns False if any file is still locked by another process.
+        """
+        temp_dir = dest_dir + "_temp"
+        if not os.path.isdir(temp_dir):
+            return True
+
+        all_clear = True
+        for fname in os.listdir(temp_dir):
+            fpath = os.path.join(temp_dir, fname)
+            if not os.path.isfile(fpath):
+                continue
             try:
-                os.remove(temp_f)
-                logger.info("Cleanup: Deleted partial/interrupted backup %s", os.path.basename(temp_f))
+                os.remove(fpath)
+                logger.info("Cleanup: Deleted temp backup %s", fname)
             except OSError as e:
-                logger.warning("Cleanup: Could not delete %s: %s", temp_f, e)
-                
-        # Also clean up any legacy .old files just in case
-        old_files = glob.glob(os.path.join(dest_dir, "*.old"))
-        for old_f in old_files:
-            try:
-                os.rename(old_f, old_f[:-4])
-                logger.info("Cleanup: Restored legacy good backup %s", os.path.basename(old_f[:-4]))
-            except OSError as e:
-                logger.warning("Cleanup: Could not restore legacy %s: %s", old_f, e)
+                logger.debug("Cleanup: Could not delete %s: %s", fpath, e)
+                all_clear = False
+
+        return all_clear
 
     # ------------------------------------------------------------------
 
