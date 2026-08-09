@@ -152,7 +152,7 @@ class LDConsoleWrapper:
         logger.error("Copy instance failed (src=%d → %s): %s", source_index, new_name, err or out[:80])
         return False, err or "Unknown error (copy command returned help page)"
 
-    def modify_instance(self, name: str, resolution: str = "", cpu: int = 0, memory: int = 0) -> Tuple[bool, str]:
+    def modify_instance(self, name: str, resolution: str = "", cpu: int = 0, memory: int = 0, root: int = -1, adb: int = -1) -> Tuple[bool, str]:
         """Modify an instance's settings. resolution is w,h,dpi (e.g. 1280,720,240)."""
         logger.info("Modifying instance: %s", name)
         args = ["modify", "--name", name]
@@ -162,13 +162,38 @@ class LDConsoleWrapper:
             args.extend(["--cpu", str(cpu)])
         if memory > 0:
             args.extend(["--memory", str(memory)])
+        if root >= 0:
+            args.extend(["--root", str(root)])
             
-        if len(args) == 3:
-            return True, "No modifications requested"
+        if len(args) > 3:
+            rc, out, err = self._run(*args, timeout=60)
+            is_error = bool(err and ("error" in err.lower() or "fail" in err.lower()))
+            if is_error:
+                logger.error("Modify instance failed: %s", err)
+                return False, err
 
-        rc, out, err = self._run(*args, timeout=60)
-        is_error = bool(err and ("error" in err.lower() or "fail" in err.lower()))
-        if not is_error:
-            return True, out
-        logger.error("Modify instance failed: %s", err)
-        return False, err
+        if adb >= 0:
+            instances = self.list_instances()
+            idx = -1
+            for inst in instances:
+                if inst.name == name:
+                    idx = inst.index
+                    break
+            if idx >= 0:
+                import json
+                import os
+                config_path = os.path.join(os.path.dirname(self.ldconsole_path), "vms", "config", f"leidian{idx}.config")
+                if os.path.exists(config_path):
+                    try:
+                        with open(config_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+                        data["basicSettings.adbDebug"] = adb
+                        with open(config_path, "w", encoding="utf-8") as f:
+                            json.dump(data, f, indent=4)
+                    except Exception as e:
+                        logger.error("Failed to update adbDebug config: %s", e)
+                        return False, str(e)
+            else:
+                return False, f"Instance {name} not found to enable ADB"
+                
+        return True, "Modifications applied"

@@ -1,4 +1,4 @@
-"""
++"""
 Settings Tab
 ============
 All user-configurable settings with live validation and save-to-disk.
@@ -90,15 +90,7 @@ class SettingsTab(QWidget):
         conc_group = QGroupBox("Batch & Concurrency")
         cl = QVBoxLayout(conc_group)
 
-        b_row = QHBoxLayout()
-        b_row.addWidget(QLabel("Batch size (instances per wave):"))
-        self._spin_batch = QSpinBox()
-        self._spin_batch.setRange(1, 100)
-        self._spin_batch.setValue(5)
-        self._spin_batch.setToolTip("How many instances to process per wave")
-        b_row.addWidget(self._spin_batch)
-        b_row.addStretch()
-        cl.addLayout(b_row)
+        # (Removed batch size)
 
         w_row = QHBoxLayout()
         w_row.addWidget(QLabel("Max concurrent workers:"))
@@ -110,7 +102,7 @@ class SettingsTab(QWidget):
         w_row.addStretch()
         cl.addLayout(w_row)
 
-        note = QLabel("💡 Tip: Keep workers ≤ batch size. Start low (3–5) and increase based on your disk performance.")
+        note = QLabel("💡 Tip: Start low (3–5) and increase based on your disk performance.")
         note.setObjectName("label_muted")
         note.setWordWrap(True)
         cl.addWidget(note)
@@ -168,7 +160,6 @@ class SettingsTab(QWidget):
         self._ldc_path.setText(s.ldconsole_path)
         self._dest_path.setText(s.backup_destination)
         self._rest_path.setText(s.restore_path)
-        self._spin_batch.setValue(s.batch_size)
         self._spin_workers.setValue(s.max_concurrency)
         self._discord_url.setText(s.discord_webhook_url)
         self._chk_notify_failure.setChecked(s.notify_on_failure)
@@ -235,7 +226,6 @@ class SettingsTab(QWidget):
         self._settings.ldconsole_path = path
         self._settings.backup_destination = self._dest_path.text().strip()
         self._settings.restore_path = self._rest_path.text().strip()
-        self._settings.batch_size = self._spin_batch.value()
         self._settings.max_concurrency = self._spin_workers.value()
         self._settings.discord_webhook_url = self._discord_url.text().strip()
         self._settings.notify_on_failure = self._chk_notify_failure.isChecked()

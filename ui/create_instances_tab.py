@@ -44,7 +44,7 @@ class CreateWorker(QThread):
     all_done = pyqtSignal(int, int)                  # success_count, fail_count
 
     def __init__(self, names: List[str], ldconsole: LDConsoleWrapper,
-                 copy_from_index: int = -1, resolution: str = "", cpu: int = 0, memory: int = 0, parent=None):
+                 copy_from_index: int = -1, resolution: str = "", cpu: int = 0, memory: int = 0, root: int = -1, adb: int = -1, parent=None):
         super().__init__(parent)
         self._names = names
         self._ldconsole = ldconsole
@@ -52,6 +52,8 @@ class CreateWorker(QThread):
         self._resolution = resolution
         self._cpu = cpu
         self._memory = memory
+        self._root = root
+        self._adb = adb
         self._cancelled = False
 
     def cancel(self):
@@ -70,9 +72,9 @@ class CreateWorker(QThread):
                     ok, msg = self._ldconsole.add_instance(name)
 
                 if ok:
-                    if self._resolution or self._cpu > 0 or self._memory > 0:
+                    if self._resolution or self._cpu > 0 or self._memory > 0 or self._root >= 0 or self._adb >= 0:
                         mod_ok, mod_msg = self._ldconsole.modify_instance(
-                            name, self._resolution, self._cpu, self._memory
+                            name, self._resolution, self._cpu, self._memory, self._root, self._adb
                         )
                         if not mod_ok:
                             logger.error("Failed to modify %s: %s", name, mod_msg)
@@ -183,6 +185,15 @@ class CreateInstancesTab(QWidget):
         self._mem_combo = QComboBox()
         self._mem_combo.addItems(["Default", "256", "512", "768", "1024", "1536", "2048", "4096", "8192"])
         row3.addWidget(self._mem_combo)
+
+        self._chk_root = QCheckBox("Root")
+        self._chk_root.setToolTip("Enable root access")
+        row3.addWidget(self._chk_root)
+
+        row3.addWidget(QLabel("ADB:"))
+        self._adb_combo = QComboBox()
+        self._adb_combo.addItems(["Default", "Close", "Local Connection"])
+        row3.addWidget(self._adb_combo)
         
         row3.addStretch()
         cg.addLayout(row3)
@@ -369,7 +380,15 @@ class CreateInstancesTab(QWidget):
         if self._chk_res.isChecked():
             res_val = f"{self._res_w.value()},{self._res_h.value()},{self._res_dpi.value()}"
 
-        self._worker = CreateWorker(names, self._ldconsole, copy_idx, res_val, cpu_val, mem_val, self)
+        root_val = 1 if self._chk_root.isChecked() else -1
+        
+        adb_val = -1
+        if self._adb_combo.currentIndex() == 1:
+            adb_val = 0
+        elif self._adb_combo.currentIndex() == 2:
+            adb_val = 1
+
+        self._worker = CreateWorker(names, self._ldconsole, copy_idx, res_val, cpu_val, mem_val, root_val, adb_val, self)
         self._worker.instance_created.connect(self._on_instance_created)
         self._worker.all_done.connect(self._on_all_done)
         self._worker.start()

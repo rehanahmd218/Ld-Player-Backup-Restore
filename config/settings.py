@@ -16,8 +16,7 @@ class AppSettings:
     backup_destination: str = ""
     restore_path: str = ""
 
-    # Batch control
-    batch_size: int = 5
+    # Concurrency control
     max_concurrency: int = 5
 
     # Retention: rename old backup to .old while new one runs, delete .old on success

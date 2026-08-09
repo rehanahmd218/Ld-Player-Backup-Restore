@@ -1494,3 +1494,10 @@ operaterecord <--name mnq_name | --index mnq_idx>  --content <jsonstring>
 2026-08-09 11:35:49  INFO      core.ldconsole — Modifying instance: LDPlayer-8
 2026-08-09 11:35:49  INFO      ui.create_instances_tab — Created instance: LDPlayer-8
 2026-08-09 11:35:49  INFO      ui.main_window — Loaded 6 LDPlayer instance(s).
+2026-08-09 11:41:34  INFO      ui.main_window — Loaded 6 LDPlayer instance(s).
+2026-08-09 11:45:07  INFO      ui.main_window — Loaded 6 LDPlayer instance(s).
+2026-08-09 11:49:29  INFO      ui.main_window — Loaded 6 LDPlayer instance(s).
+2026-08-09 11:50:13  INFO      core.ldconsole — Creating new instance: LDPlayer-1
+2026-08-09 11:50:13  INFO      ui.create_instances_tab — Created instance: LDPlayer-1
+2026-08-09 11:50:13  INFO      ui.main_window — Loaded 7 LDPlayer instance(s).
+2026-08-09 11:51:33  INFO      ui.main_window — Loaded 7 LDPlayer instance(s).
