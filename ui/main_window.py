@@ -418,9 +418,16 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     @staticmethod
     def load_theme() -> str:
-        qss_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "styles", "theme.qss"
-        )
+        if getattr(sys, "frozen", False):
+            base_dir = getattr(sys, "_MEIPASS", os.path.dirname(sys.executable))
+            qss_path = os.path.join(base_dir, "ui", "styles", "theme.qss")
+            if not os.path.exists(qss_path):
+                qss_path = os.path.join(os.path.dirname(sys.executable), "ui", "styles", "theme.qss")
+        else:
+            qss_path = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "styles", "theme.qss"
+            )
+
         if os.path.exists(qss_path):
             with open(qss_path, "r", encoding="utf-8") as f:
                 return f.read()
